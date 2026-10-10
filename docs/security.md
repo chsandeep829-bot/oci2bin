@@ -396,6 +396,13 @@ oci2bin sign --key priv.pem --in app.bin
 ./app.bin
 ```
 
+The runtime reads `require_signed` as a top-level JSON boolean, including
+escaped key names and arbitrary JSON whitespace. It refuses malformed
+metadata, duplicate policy fields, non-boolean policies, and nesting beyond
+64 levels before extracting the image. The embedded policy and key remain
+part of the artifact; use an out-of-band trusted key with `--verify-key` when
+the artifact itself is untrusted.
+
 The produced binary verifies signatures itself: ECDSA over NIST P-256 (the
 curve `oci2bin sign` keys use) with SHA-256 or SHA-512, implemented in the
 loader, so `--verify-key`, `--require-signed` and a `--pin-digest` pin all

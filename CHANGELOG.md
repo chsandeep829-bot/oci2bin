@@ -152,6 +152,14 @@ All notable changes to oci2bin are documented here.
 
 ### Security
 
+- Parse the runtime `require_signed` policy structurally instead of matching
+  two literal spellings. JSON whitespace and escaped keys cannot hide the
+  policy; nested fields cannot enable it. Malformed metadata, non-boolean
+  policies, duplicate policy keys, and excessive nesting are refused.
+- Prevent original archive members from shadowing rewritten blobs, injected
+  layers, or generated OCI manifests by claiming their destination names.
+  Replacement content now takes precedence regardless of archive order.
+
 - **`--vm` no longer puts arguments, `-e` values, `--entrypoint`,
   `--workdir` or `-v` specs on the kernel command line.** The
   cloud-hypervisor backend hex-encoded them into `--cmdline`, which every

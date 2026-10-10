@@ -22109,6 +22109,175 @@ static int read_self_metadata(const char* self_path, char** out)
     return 1;
 }
 
+/* Policy metadata must be parsed as JSON, not searched for a spelling of a
+ * boolean. Validate the whole document so malformed structure cannot hide a
+ * policy. Bound recursion, decode keys, and reject duplicate policy keys
+ * rather than choosing a different value from another verifier. */
+static void policy_json_space(const char** p)
+{
+    while (**p && strchr(" \t\r\n", **p))
+    {
+        (*p)++;
+    }
+}
+
+static char* policy_json_string(const char** p)
+{
+    const char* start = *p;
+    if (json_skip_string(p) < 0)
+    {
+        return NULL;
+    }
+    for (const char* q = start + 1; q < *p - 1; q++)
+    {
+        if ((unsigned char)*q < 0x20)
+        {
+            return NULL;
+        }
+    }
+    return json_unescape(start + 1, (size_t)(*p - start - 2));
+}
+
+static int policy_json_value(const char** p, unsigned depth, int* required)
+{
+    if (depth > 64)
+    {
+        return -1;
+    }
+    policy_json_space(p);
+    if (**p == '{' || **p == '[')
+    {
+        int object = **p == '{';
+        char close = object ? '}' : ']';
+        (*p)++;
+        policy_json_space(p);
+        if (**p == close)
+        {
+            (*p)++;
+            return 0;
+        }
+        for (;;)
+        {
+            int policy_key = 0;
+            if (object)
+            {
+                char* key = policy_json_string(p);
+                if (!key)
+                {
+                    return -1;
+                }
+                policy_key = depth == 0 && strcmp(key, "require_signed") == 0;
+                free(key);
+                policy_json_space(p);
+                if (**p != ':')
+                {
+                    return -1;
+                }
+                (*p)++;
+                policy_json_space(p);
+            }
+            if (policy_key)
+            {
+                if (*required != -1)
+                {
+                    return -1;
+                }
+                if (strncmp(*p, "true", 4) == 0)
+                {
+                    *required = 1;
+                }
+                else if (strncmp(*p, "false", 5) == 0)
+                {
+                    *required = 0;
+                }
+                else
+                {
+                    return -1;
+                }
+            }
+            if (policy_json_value(p, depth + 1, required) < 0)
+            {
+                return -1;
+            }
+            policy_json_space(p);
+            if (**p == close)
+            {
+                (*p)++;
+                return 0;
+            }
+            if (**p != ',')
+            {
+                return -1;
+            }
+            (*p)++;
+            policy_json_space(p);
+        }
+    }
+    if (**p == '"')
+    {
+        char* value = policy_json_string(p);
+        if (!value)
+        {
+            return -1;
+        }
+        free(value);
+        return 0;
+    }
+    const char* literals[] = {"true", "false", "null"};
+    for (size_t i = 0; i < sizeof(literals) / sizeof(literals[0]); i++)
+    {
+        size_t len = strlen(literals[i]);
+        if (strncmp(*p, literals[i], len) == 0)
+        {
+            *p += len;
+            return 0;
+        }
+    }
+    /* JSON number grammar; do not use strtod(), which accepts NaN/Inf and
+     * locale-dependent syntax. Delimiters are checked by the caller. */
+    if (**p == '-')
+    {
+        (*p)++;
+    }
+    if (**p == '0')
+    {
+        (*p)++;
+    }
+    else
+    {
+        if (**p < '1' || **p > '9')
+        {
+            return -1;
+        }
+        *p += strspn(*p, "0123456789");
+    }
+    if (**p == '.')
+    {
+        (*p)++;
+        size_t len = strspn(*p, "0123456789");
+        if (!len)
+        {
+            return -1;
+        }
+        *p += len;
+    }
+    if (**p == 'e' || **p == 'E')
+    {
+        (*p)++;
+        if (**p == '+' || **p == '-')
+        {
+            (*p)++;
+        }
+        size_t len = strspn(*p, "0123456789");
+        if (!len)
+        {
+            return -1;
+        }
+        *p += len;
+    }
+    return 0;
+}
+
 /*
  * Does this binary declare the --require-signed policy?
  *
@@ -22136,10 +22305,12 @@ static int has_require_signed_marker(const char* self_path)
     {
         return rc; /* 0 = no block, -1 = malformed */
     }
-    /* Scoped to the validated block, so this is a field lookup rather than a
-     * scan over arbitrary file bytes. */
-    int found = (strstr(meta, "\"require_signed\":true") != NULL) ||
-                (strstr(meta, "\"require_signed\": true") != NULL);
+    const char* p = meta;
+    policy_json_space(&p);
+    int required = -1;
+    int valid = *p == '{' && policy_json_value(&p, 0, &required) == 0;
+    policy_json_space(&p);
+    int found = valid && *p == '\0' ? required == 1 : -1;
     free(meta);
     return found;
 }

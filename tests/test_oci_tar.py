@@ -96,6 +96,21 @@ class NormalizeTest(unittest.TestCase):
             ("abc.json", b"{}"), ("x/layer.tar", _tar([("f", b"")]))])
         self.assertEqual(ot.normalize_oci_layout(data), data)
 
+    def test_preexisting_blob_cannot_shadow_normalized_content(self):
+        cfg, layer = b'{"a":2}', b'layer'
+        original = _read(_layout(cfg, layer, stale_config=True))
+        normalized = _read(ot.normalize_oci_layout(_tar(original.items())))
+        index = json.loads(normalized['index.json'])
+        manifest_name = 'blobs/sha256/' + index['manifests'][0]['digest'][7:]
+        for destination in ('blobs/sha256/' + _sha(cfg), manifest_name):
+            for first in (True, False):
+                with self.subTest(destination=destination, first=first):
+                    planted = [(destination, b'wrong content')]
+                    entries = list(original.items())
+                    data = _tar(planted + entries if first else entries + planted)
+                    result = _read(ot.normalize_oci_layout(data))
+                    self.assertEqual(result[destination], normalized[destination])
+
 
 
 class SharedHelpersTest(unittest.TestCase):
@@ -171,6 +186,23 @@ class SharedHelpersTest(unittest.TestCase):
                          new_name)
         self.assertEqual(out["blobs/sha256/" + "e" * 64], b"more")
         self.assertIn(lay_name, out)
+
+    def test_rewrite_wins_over_existing_destination_in_either_order(self):
+        for entries in ([('destination', b'stale'), ('source', b'old')],
+                        [('source', b'old'), ('destination', b'stale')]):
+            with self.subTest(entries=entries):
+                result = ot.repack_oci_tar(
+                    _tar(entries),
+                    {'source': (ot.make_tar_info('destination', 3), b'new')},
+                    [(ot.make_tar_info('injected', 4), b'safe')])
+                self.assertEqual(_read(result),
+                                 {'destination': b'new', 'injected': b'safe'})
+
+    def test_injected_layer_wins_over_preexisting_member(self):
+        result = ot.repack_oci_tar(
+            _tar([('layer', b'attacker-controlled')]), {},
+            [(ot.make_tar_info('layer', 4), b'safe')])
+        self.assertEqual(_read(result), {'layer': b'safe'})
 
     def test_content_name_for_and_diff_id(self):
         blob = b"payload"

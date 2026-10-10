@@ -7196,6 +7196,60 @@ static void test_read_self_metadata(void)
     ASSERT_INT_EQ(has_require_signed_marker(path), 1,
                   "read_self_metadata: require_signed detected");
 
+    const struct
+    {
+        const char* json;
+        int policy;
+    } policies[] = {
+        {"{\"require_signed\" : \n\t true}", 1},
+        {"{\"require_\\u0073igned\":true}", 1},
+        {"{\"nested\":{\"require_signed\":true}}", 0},
+        {"{\"require_signed\":false}", 0},
+        {"{\"require_signed\":\"true\"}", -1},
+        {"{\"require_signed\":trueX}", -1},
+        {"{\"require_signed\":false,\"require_signed\":true}", -1},
+        {"{\"require_signed\":false,\"require_\\u0073igned\":true}", -1},
+        {"{\"nested\":[}],\"require_signed\":true}", -1},
+        {"{\"image\":\"broken\\q\"}", -1},
+        {"{\"image\":\"x\"} trailing", -1},
+        {"{\"a\":[null,false,true,-1,0,1.5,2e+3,{}],\"require_signed\":true}", 1},
+        {"{\"a\":01}", -1},
+        {"{\"a\":1.}", -1},
+        {"{\"a\":1e}", -1},
+        {"{\"a\":[true,]}", -1},
+        {"{\"a\":true,}", -1},
+        {"{\"a\":\"raw\nnewline\"}", -1},
+        {"{\"a\":\"\\u0000\"}", -1},
+        {"[]", -1},
+    };
+    for (size_t i = 0; i < sizeof(policies) / sizeof(policies[0]); i++)
+    {
+        n = rsm_build(buf, 512, policies[i].json, -1);
+        rsm_write(path, buf, n);
+        ASSERT_INT_EQ(has_require_signed_marker(path), policies[i].policy,
+                      "require-signed: parse top-level policy structurally");
+        if (policies[i].policy != 0)
+        {
+            ASSERT_INT_EQ(enforce_require_signed(path), 1,
+                          "require-signed: unsigned or malformed policy refuses");
+        }
+    }
+
+    char deep[256];
+    size_t deep_len = 0;
+    memcpy(deep, "{\"a\":", 5);
+    deep_len = 5;
+    memset(deep + deep_len, '[', 65);
+    deep_len += 65;
+    memset(deep + deep_len, ']', 65);
+    deep_len += 65;
+    deep[deep_len++] = '}';
+    deep[deep_len] = '\0';
+    n = rsm_build(buf, 512, deep, -1);
+    rsm_write(path, buf, n);
+    ASSERT_INT_EQ(has_require_signed_marker(path), -1,
+                  "require-signed: excessive JSON nesting refuses");
+
     /* Same block with a signature block appended: the metadata is still
      * found, because the signature is stripped first. */
     n = rsm_build(buf, 512, json, -1);
@@ -8489,6 +8543,15 @@ static void test_parse_opts_rootfs_cache(void)
 
 /* ── VM run-time parameters (initramfs file, not the kernel cmdline) ────── */
 
+static void free_vm_params_list(char** list)
+{
+    if (list)
+    {
+        free(list[0]); /* decoded strings share one allocation */
+        free(list);
+    }
+}
+
 static void test_vm_params_roundtrip(void)
 {
     struct container_opts opts;
@@ -8537,6 +8600,7 @@ static void test_vm_params_roundtrip(void)
         ASSERT_STR_EQ(argv_out[2], a2, "vm params: quotes and spaces kept");
         ASSERT_STR_EQ(argv_out[3], "", "vm params: empty argument kept");
     }
+    free_vm_params_list(argv_out);
     char** env_out = NULL;
     n = vm_params_decode_list(params, "oci2bin.env=", &env_out, MAX_ENV);
     ASSERT_INT_EQ(n, 2, "vm params: env count");
@@ -8545,6 +8609,7 @@ static void test_vm_params_roundtrip(void)
         ASSERT_STR_EQ(env_out[0], e0, "vm params: env value with space");
         ASSERT_STR_EQ(env_out[1], e1, "vm params: empty env value");
     }
+    free_vm_params_list(env_out);
     char** one = NULL;
     ASSERT_INT_EQ(vm_params_decode_list(params, "oci2bin.ep=", &one, 1), 1,
                   "vm params: entrypoint present");
@@ -8552,6 +8617,7 @@ static void test_vm_params_roundtrip(void)
     {
         ASSERT_STR_EQ(one[0], ep, "vm params: entrypoint value");
     }
+    free_vm_params_list(one);
     one = NULL;
     ASSERT_INT_EQ(vm_params_decode_list(params, "oci2bin.wd=", &one, 1), 1,
                   "vm params: workdir present");
@@ -8559,6 +8625,7 @@ static void test_vm_params_roundtrip(void)
     {
         ASSERT_STR_EQ(one[0], wd, "vm params: workdir value");
     }
+    free_vm_params_list(one);
     char** m0 = NULL;
     ASSERT_INT_EQ(vm_params_decode_list(params, "oci2bin.mount.0=", &m0, 2),
                   2, "vm params: mount 0 has tag and path");
@@ -8567,6 +8634,7 @@ static void test_vm_params_roundtrip(void)
         ASSERT_STR_EQ(m0[0], "vol0", "vm params: mount 0 tag");
         ASSERT_STR_EQ(m0[1], v0, "vm params: mount 0 path with space");
     }
+    free_vm_params_list(m0);
     char** m2 = NULL;
     ASSERT_INT_EQ(vm_params_decode_list(params, "oci2bin.mount.2=", &m2, 2),
                   0, "vm params: absent mount returns 0");
@@ -8730,6 +8798,7 @@ static void test_vm_read_params_unlinks(void)
     {
         ASSERT_STR_EQ(one[0], "/tmp", "vm read params: workdir decoded");
     }
+    free_vm_params_list(one);
     free(params);
 
     char* missing = vm_read_params_from(file);

@@ -149,9 +149,14 @@ def repack_oci_tar(orig_data, replacements, extra_entries):
     Members are emitted in their original order.  When two replacements
     collapse onto one new name (two stale blobs that now hash the same, or
     a rename onto a member that already exists) the name is written once.
+    Replacements and extra entries take precedence over original members,
+    regardless of archive order. An input member must not shadow injected
+    content merely by claiming its destination name.
     Returns the new tar bytes."""
     buf = io.BytesIO()
     emitted = set()
+    reserved = {info.name for info, _ in replacements.values()}
+    reserved.update(info.name for info, _ in extra_entries)
     with tarfile.open(fileobj=buf, mode='w:') as out_tf:
         with tarfile.open(fileobj=io.BytesIO(orig_data), mode='r:*') as in_tf:
             for member in in_tf.getmembers():
@@ -162,7 +167,7 @@ def repack_oci_tar(orig_data, replacements, extra_entries):
                     emitted.add(new_info.name)
                     out_tf.addfile(new_info, io.BytesIO(new_data))
                     continue
-                if member.name in emitted:
+                if member.name in emitted or member.name in reserved:
                     continue
                 emitted.add(member.name)
                 if member.isfile():
@@ -387,10 +392,16 @@ def normalize_oci_layout(oci_data, sort_members=False):
 
     out_members = []
     emitted = set()
+    rename_targets = set(renames.values())
+    manifest_target = new_manifest_blob[0] if new_manifest_blob else None
     for m in members:
         if m.name in drop:
             continue
+        if m.name in rename_targets and m.name not in renames:
+            continue  # the renamed source owns this destination
         name = renames.get(m.name, m.name)
+        if name == manifest_target:
+            continue  # emit the freshly generated manifest below
         if name in emitted:
             continue  # two old names collapsed onto one digest
         emitted.add(name)
@@ -401,7 +412,6 @@ def normalize_oci_layout(oci_data, sort_members=False):
         info = tarfile.TarInfo(name=new_manifest_blob[0])
         info.mode = 0o644
         extra.append((info, new_manifest_blob[0]))
-        bodies[new_manifest_blob[0]] = new_manifest_blob[1]
 
     items = [(m, name) for m, name in out_members] + extra
     if sort_members:
@@ -427,7 +437,8 @@ def normalize_oci_layout(oci_data, sort_members=False):
             if m.isfile() or m.name in materialize:
                 # Bodies stay keyed by the original member name; renamed
                 # blobs carry their bytes over under the new name.
-                source = bodies[m.name]
+                source = (new_manifest_blob[1] if name == manifest_target
+                          else bodies[m.name])
                 info.size = len(source)
                 out.addfile(info, io.BytesIO(source))
             else:

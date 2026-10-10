@@ -63,6 +63,8 @@ workload layers:
 - Artifacts can be signed, verified at runtime, or built with a mandatory
   embedded signature policy. Digest pinning, source-image Cosign verification,
   Rekor entries, and provenance attestations extend the chain of trust.
+  Signature-policy parsing accepts JSON whitespace and escaped keys, and
+  rejects malformed metadata or duplicate policy fields before extraction.
 - Embedded image payloads can be encrypted with age recipients or a
   passphrase; the executable loader and routing metadata remain readable so
   Linux can start the file. Runtime secrets are mounted read-only; TPM2-sealed
