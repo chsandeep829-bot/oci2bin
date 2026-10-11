@@ -6978,7 +6978,7 @@ static int verify_oci_descriptors(const char* oci_dir,
  * evicts the entry and rebuilds it rather than trusting it.
  */
 
-#define ROOTFS_CACHE_KEY_PREFIX "oci2bin-rootfs-cache-v1\n"
+#define ROOTFS_CACHE_KEY_PREFIX "oci2bin-rootfs-cache-payload-v2\n"
 #define ROOTFS_CACHE_META_MAGIC "oci2bin-rootfs-cache 1"
 #define ROOTFS_CACHE_MAX_MANIFEST (1024u * 1024u)
 #define ROOTFS_CACHE_MAX_CONFIG   (64u * 1024u * 1024u)
@@ -7139,20 +7139,58 @@ static void sha256_to_hex(const unsigned char digest[32], char out[65])
     out[64] = '\0';
 }
 
-/* The cache key for an image config: SHA-256 over a format prefix and the
- * config bytes.  Bumping the prefix orphans every existing entry, which is
- * what a change to the extraction rules needs. */
-static void rootfs_cache_key_from_config(const char* config, size_t len,
+/* Cache identity must cover the actual layer bytes, not just the config's
+ * claimed diff_ids.  The builder checks those claims once, but a binary can
+ * be changed later; a config-only key let that binary fill the cache for a
+ * different, signed binary with the same config. The format prefix isolates
+ * these keys from entries published by older extraction rules. */
+static int rootfs_cache_key_from_payload(const char* self_path,
         char key_out[65])
 {
+    int fd = open(self_path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+    {
+        return -1;
+    }
+    struct stat st;
+    if (fstat(fd, &st) < 0 || st.st_size < 0 ||
+            OCI_DATA_OFFSET > (unsigned long)st.st_size ||
+            OCI_DATA_SIZE > (unsigned long)st.st_size - OCI_DATA_OFFSET)
+    {
+        close(fd);
+        return -1;
+    }
     struct sha256_ctx ctx;
-    unsigned char digest[32];
+    unsigned char digest[32], buf[65536];
     sha256_init(&ctx);
     sha256_update(&ctx, ROOTFS_CACHE_KEY_PREFIX,
                   strlen(ROOTFS_CACHE_KEY_PREFIX));
-    sha256_update(&ctx, config, len);
+    unsigned long left = OCI_DATA_SIZE;
+    if (lseek(fd, (off_t)OCI_DATA_OFFSET, SEEK_SET) < 0)
+    {
+        close(fd);
+        return -1;
+    }
+    while (left > 0)
+    {
+        size_t want = left < sizeof(buf) ? (size_t)left : sizeof(buf);
+        ssize_t n = read(fd, buf, want);
+        if (n < 0 && errno == EINTR)
+        {
+            continue;
+        }
+        if (n <= 0)
+        {
+            close(fd);
+            return -1;
+        }
+        sha256_update(&ctx, buf, (size_t)n);
+        left -= (unsigned long)n;
+    }
+    close(fd);
     sha256_final(&ctx, digest);
     sha256_to_hex(digest, key_out);
+    return 0;
 }
 
 static int is_hex_key(const char* s)
@@ -7515,32 +7553,7 @@ static int rootfs_cache_key_from_embedded_tar(const char* self_path,
         goto out;
     }
 
-    struct sha256_ctx ctx;
-    unsigned char digest[32];
-    sha256_init(&ctx);
-    sha256_update(&ctx, ROOTFS_CACHE_KEY_PREFIX,
-                  strlen(ROOTFS_CACHE_KEY_PREFIX));
-    unsigned char chunk[65536];
-    unsigned long done = 0;
-    while (done < clen)
-    {
-        size_t want = clen - done < sizeof(chunk) ? (size_t)(clen - done)
-                      : sizeof(chunk);
-        ssize_t n = pread(fd, chunk, want, (off_t)(coff + done));
-        if (n < 0 && errno == EINTR)
-        {
-            continue;
-        }
-        if (n <= 0)
-        {
-            goto out;
-        }
-        sha256_update(&ctx, chunk, (size_t)n);
-        done += (unsigned long)n;
-    }
-    sha256_final(&ctx, digest);
-    sha256_to_hex(digest, key_out);
-    rc = 0;
+    rc = rootfs_cache_key_from_payload(self_path, key_out);
 
 out:
     free(manifest);
@@ -8029,18 +8042,16 @@ static int rootfs_cache_publish(const char* root, const char* key,
 
 static int extract_layers_from_layout(const char* oci_dir,
                                       const char* tmpdir,
-                                      const char* rootfs,
-                                      char key_out[65]);
+                                      const char* rootfs);
 
 /*
  * Copy the embedded OCI tar out of ourselves (decrypting / inflating as
  * needed), unpack the layout into <tmpdir>/oci and merge its layers into
  * the directory `rootfs`, which must not exist yet.  Staging directories
- * live under tmpdir.  key_out, when non-NULL, receives the rootfs cache key
- * of the image config.  Returns 0 or -1 (diagnostic printed).
+ * live under tmpdir. Returns 0 or -1 (diagnostic printed).
  */
 static int extract_oci_rootfs_into(const char* self_path, const char* tmpdir,
-                                   const char* rootfs, char key_out[65])
+                                   const char* rootfs)
 {
     char oci_dir[PATH_MAX];
     if (extract_embedded_oci_layout(self_path, tmpdir,
@@ -8048,7 +8059,7 @@ static int extract_oci_rootfs_into(const char* self_path, const char* tmpdir,
     {
         return -1;    /* diagnostic already printed */
     }
-    return extract_layers_from_layout(oci_dir, tmpdir, rootfs, key_out);
+    return extract_layers_from_layout(oci_dir, tmpdir, rootfs);
 }
 
 /*
@@ -8076,7 +8087,7 @@ static char* extract_oci_rootfs(const char* self_path)
         s_runtime_tmpdir[0] = '\0';
         return NULL;
     }
-    if (extract_oci_rootfs_into(self_path, tmpdir, s_oci_rootfs, NULL) < 0)
+    if (extract_oci_rootfs_into(self_path, tmpdir, s_oci_rootfs) < 0)
     {
         rm_rf_dir(tmpdir);
         s_runtime_tmpdir[0] = '\0';
@@ -8093,8 +8104,7 @@ static char* extract_oci_rootfs(const char* self_path)
  */
 static int extract_layers_from_layout(const char* oci_dir,
                                       const char* tmpdir,
-                                      const char* rootfs,
-                                      char key_out[65])
+                                      const char* rootfs)
 {
     debug_log("extract.begin", "oci_dir=%s rootfs=%s", oci_dir, rootfs);
 
@@ -8256,10 +8266,6 @@ static int extract_layers_from_layout(const char* oci_dir,
     char* config = read_file_beneath(oci_dir_fd, config_path_rel,
                                      &config_size);
     close(oci_dir_fd);
-    if (config && key_out)
-    {
-        rootfs_cache_key_from_config(config, config_size, key_out);
-    }
     if (config)
     {
         /* Write parsed entrypoint/env info for use inside the container */
@@ -8349,39 +8355,6 @@ static int extract_layers_from_layout(const char* oci_dir,
     debug_log("extract.done", "rootfs=%s", rootfs);
     return 0;
 }
-
-/* Cache key from an unpacked layout: hash the config file manifest.json
- * names (the slow path, used for compressed and encrypted payloads). */
-static int rootfs_cache_key_from_layout(const char* oci_dir, char key_out[65])
-{
-    int dir_fd = open(oci_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (dir_fd < 0)
-    {
-        return -1;
-    }
-    size_t manifest_size = 0;
-    char* manifest = read_file_beneath(dir_fd, "manifest.json",
-                                       &manifest_size);
-    char* config_rel = manifest ? json_get_string(manifest, "Config") : NULL;
-    char* config = NULL;
-    size_t config_size = 0;
-    if (config_member_path_is_safe(config_rel))
-    {
-        config = read_file_beneath(dir_fd, config_rel, &config_size);
-    }
-    close(dir_fd);
-    int rc = -1;
-    if (config && config_size > 0)
-    {
-        rootfs_cache_key_from_config(config, config_size, key_out);
-        rc = 0;
-    }
-    free(config);
-    free(config_rel);
-    free(manifest);
-    return rc;
-}
-
 
 /* ── Private writable layer over a cached tree ──────────────────────────── */
 
@@ -9071,35 +9044,6 @@ static int embedded_payload_is_encrypted(const char* self_path)
     return 0;
 }
 
-/* Remove the payload copies the slow key path left in the runtime tmpdir
- * (they can hold a decrypted image) once the cached tree is being used. */
-static void discard_layout_scratch(const char* tmpdir)
-{
-    static const char* const names[] =
-    {
-        "/oci", "/image.tar", "/image.dec.tar", "/image.unz.tar", NULL
-    };
-    for (int i = 0; names[i]; i++)
-    {
-        char p[PATH_MAX];
-        if (path_join_suffix(p, sizeof(p), tmpdir, names[i]) == 0)
-        {
-            struct stat st;
-            if (lstat(p, &st) == 0)
-            {
-                if (S_ISDIR(st.st_mode))
-                {
-                    rm_rf_dir(p);
-                }
-                else
-                {
-                    unlink(p);
-                }
-            }
-        }
-    }
-}
-
 /* Use a tree we built but could not publish: it is private to this run.
  * The entry lock is kept (shared) so `oci2bin prune` sees the scratch
  * directory as in use for as long as the container runs. */
@@ -9172,29 +9116,20 @@ static char* prepare_rootfs(const char* self_path,
         return NULL;
     }
 
-    /* 1. Key: straight from the embedded tar when it is plain, else via the
-     * unpacked layout (encrypted with --rootfs-cache always, zstd). */
+    /* 1. Key: hash the exact embedded payload bytes. A config-only key lets
+     * changed layers share a cache entry with a trusted artifact. */
     char key[65] = {0};
-    char oci_dir[PATH_MAX];
-    int  have_layout = 0;
     if (rootfs_cache_key_from_embedded_tar(self_path, key) == 0)
     {
         debug_log("cache.key", "key=%s source=embedded-tar", key);
     }
+    else if (rootfs_cache_key_from_payload(self_path, key) == 0)
+    {
+        debug_log("cache.key", "key=%s source=payload", key);
+    }
     else
     {
-        if (extract_embedded_oci_layout(self_path, tmpdir, oci_dir,
-                                        sizeof(oci_dir)) < 0)
-        {
-            goto fail;
-        }
-        have_layout = 1;
-        if (rootfs_cache_key_from_layout(oci_dir, key) < 0)
-        {
-            debug_log("cache.disabled", "reason=no-config-key");
-            goto uncached;
-        }
-        debug_log("cache.key", "key=%s source=layout", key);
+        goto fail;
     }
 
     /* 2. Take the entry lock: shared for use, exclusive to (re)build. */
@@ -9277,25 +9212,12 @@ static char* prepare_rootfs(const char* self_path,
         goto uncached;
     }
     {
-        char built_key[65] = {0};
-        int  rc = have_layout
-                  ? extract_layers_from_layout(oci_dir, tmpdir, dest,
-                                               built_key)
-                  : extract_oci_rootfs_into(self_path, tmpdir, dest,
-                                            built_key);
+        int rc = extract_oci_rootfs_into(self_path, tmpdir, dest);
         if (rc < 0)
         {
             rm_rf_dir(build_dir);
             close(lock_fd);
             goto fail;
-        }
-        if (strcmp(built_key, key) != 0)
-        {
-            /* Cannot happen for a well-formed payload; never publish a tree
-             * under a key that was not derived from the same bytes. */
-            debug_log("cache.publish", "key=%s result=key-disagreement built=%s",
-                      key, built_key);
-            return use_private_build_dir(build_dir, lock_fd);
         }
     }
     if (rootfs_cache_publish(root, key, build_dir, entry_dir) < 0)
@@ -9306,10 +9228,6 @@ static char* prepare_rootfs(const char* self_path,
     {
         /* Cannot happen once we hold LOCK_EX; treat as unlocked use. */
         debug_log("cache.lock", "downgrade failed errno=%d", errno);
-    }
-    if (have_layout)
-    {
-        discard_layout_scratch(tmpdir);
     }
     debug_log("cache.stored", "key=%s entry=%s", key, entry_dir);
     s_rootfs_cache_lock_fd = lock_fd;
@@ -9329,10 +9247,6 @@ hit:
             (void)utimensat(AT_FDCWD, meta, NULL, 0);    /* last used */
         }
     }
-    if (have_layout)
-    {
-        discard_layout_scratch(tmpdir);
-    }
     if (prepare_private_rootfs(lower, tmpdir, opts, opts->use_vm) < 0)
     {
         goto fail;
@@ -9348,11 +9262,7 @@ uncached:
         fprintf(stderr, "oci2bin: rootfs path too long\n");
         goto fail;
     }
-    if (have_layout
-            ? extract_layers_from_layout(oci_dir, tmpdir, s_oci_rootfs,
-                                         NULL) < 0
-            : extract_oci_rootfs_into(self_path, tmpdir, s_oci_rootfs,
-                                      NULL) < 0)
+    if (extract_oci_rootfs_into(self_path, tmpdir, s_oci_rootfs) < 0)
     {
         goto fail;
     }
@@ -17649,11 +17559,11 @@ static void usage(const char* prog)
     fprintf(stderr,
             "Usage: %s [OPTIONS] [-- CMD [ARGS...]]\n"
             "       %s [OPTIONS] CMD [ARGS...]\n"
-            "       %s mcp-serve [--allow-net] [--allow-mount PATH]\n"
+            "       %s mcp-serve [--allow-net] [--allow-image PATH]\n"
             "\n"
             "Subcommands:\n"
-            "  mcp-serve [--allow-net] [--allow-mount PATH]\n"
-            "            [--allow-mount-rw PATH]\n"
+            "  mcp-serve [--allow-net] [--allow-image PATH]\n"
+            "            [--allow-mount PATH] [--allow-mount-rw PATH]\n"
             "                      Start a JSON-RPC 2.0 MCP server on stdin/stdout.\n"
             "                      Exposes tools: run_container, exec_in_container,\n"
             "                      list_containers, stop_container, inspect_image,\n"
@@ -17663,6 +17573,8 @@ static void usage(const char* prog)
             "                      Host mounts are denied unless a root is allowed\n"
             "                      with --allow-mount (read-only) or\n"
             "                      --allow-mount-rw; both may be repeated.\n"
+            "                      Only this image is executable by default;\n"
+            "                      --allow-image trusts another exact binary.\n"
             "\n"
             "Options:\n"
             "  -v HOST:CONTAINER[:ro|:rw]\n"
@@ -25601,6 +25513,40 @@ struct mcp_mount_root
 static struct mcp_mount_root g_mcp_mount_roots[MCP_MAX_MOUNT_ROOTS];
 static int                   g_mcp_n_mount_roots;
 
+/* A model request cannot nominate executable host code.  The server's own
+ * artifact is allowed by default; the operator may explicitly trust more. */
+#define MCP_MAX_IMAGES 16
+static char g_mcp_images[MCP_MAX_IMAGES][PATH_MAX];
+static int  g_mcp_n_images;
+
+static int mcp_allow_image(const char* path)
+{
+    if (!path_is_absolute_and_clean(path))
+    {
+        return -1;
+    }
+    char resolved[PATH_MAX];
+    struct stat st;
+    if (!realpath(path, resolved) || stat(resolved, &st) < 0 ||
+            !S_ISREG(st.st_mode) || access(resolved, X_OK) < 0)
+    {
+        return -1;
+    }
+    for (int i = 0; i < g_mcp_n_images; i++)
+    {
+        if (strcmp(g_mcp_images[i], resolved) == 0)
+        {
+            return 0;
+        }
+    }
+    if (g_mcp_n_images >= MCP_MAX_IMAGES)
+    {
+        return -1;
+    }
+    snprintf(g_mcp_images[g_mcp_n_images++], PATH_MAX, "%s", resolved);
+    return 0;
+}
+
 /*
  * Is 'path' the root itself or something below it? Compares whole components,
  * so /srv/dataset is not treated as being under /srv/data. An empty root
@@ -25656,9 +25602,9 @@ static const struct mcp_mount_root* mcp_mount_root_for_real(
  * The tool execs this path on the host, outside every sandbox, so "absolute
  * and executable" is not enough: a client that can write into an
  * --allow-mount-rw root could drop a script there and have it "inspected".
- * Require a regular ELF file that carries a well-formed OCI2BIN_META block,
- * and refuse anything that resolves into a writable mount root.  Callers exec
- * `out` (the resolved path), not the string the client sent.
+ * Require a regular ELF file with metadata and an explicit operator grant,
+ * and refuse anything inside a writable mount root. Metadata alone is
+ * forgeable: an arbitrary ELF can append an OCI2BIN_META block.
  * Returns NULL on success or a static error message.
  */
 static const char* mcp_validate_image(const char* image, char* out,
@@ -25704,7 +25650,14 @@ static const char* mcp_validate_image(const char* image, char* out,
     {
         return "'image' is not an oci2bin binary";
     }
-    return NULL;
+    for (int i = 0; i < g_mcp_n_images; i++)
+    {
+        if (strcmp(out, g_mcp_images[i]) == 0)
+        {
+            return NULL;
+        }
+    }
+    return "'image' was not allowed when mcp-serve started";
 }
 
 /* Validate an MCP container name: alphanumeric, '-', '_', '.' only */
@@ -27604,12 +27557,27 @@ int main(int argc, char* argv[])
         {
             return 1;
         }
+        if (mcp_allow_image(self_path) < 0)
+        {
+            fprintf(stderr, "oci2bin: mcp-serve: cannot allow its own image\n");
+            return 1;
+        }
         int allow_net = 0;
         for (int i = 2; i < argc; i++)
         {
             if (strcmp(argv[i], "--allow-net") == 0)
             {
                 allow_net = 1;
+            }
+            else if (strcmp(argv[i], "--allow-image") == 0)
+            {
+                if (i + 1 >= argc || mcp_allow_image(argv[++i]) < 0)
+                {
+                    fprintf(stderr,
+                            "oci2bin: mcp-serve: --allow-image requires an"
+                            " existing executable absolute PATH\n");
+                    return 1;
+                }
             }
             else if (strcmp(argv[i], "--allow-mount") == 0 ||
                      strcmp(argv[i], "--allow-mount-rw") == 0)

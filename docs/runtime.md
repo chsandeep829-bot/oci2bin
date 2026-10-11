@@ -321,10 +321,10 @@ layer on exit.
 
 The first launch of a binary extracts its layers once and keeps the merged
 tree under `${XDG_CACHE_HOME:-~/.cache}/oci2bin/rootfs/<key>/`, where `<key>`
-is the SHA-256 of the image config. Every later launch of a binary carrying
-the same image skips extraction entirely; `--debug` shows `cache.hit` instead
-of `extract.begin`/`extract.done`. The key is read straight out of the embedded
-tar, so a warm start never copies or unpacks the payload.
+is a SHA-256 digest of the exact embedded payload bytes. Every later launch
+of the same payload skips extraction; `--debug` shows `cache.hit` instead of
+`extract.begin`/`extract.done`. A warm start hashes the payload but never
+copies or unpacks it. Changed layers cannot reuse another image's rootfs.
 
 The cached tree is never written to. Each run gets a private writable layer
 on top, chosen in this order:

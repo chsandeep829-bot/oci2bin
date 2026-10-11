@@ -1022,8 +1022,10 @@ Bring a declarative stack of binaries up and down.
 Build to a temp file and run it in one step.
 @item oci2bin from-chroot DIR [-o OUT] / build-dockerfile [-f FILE]
 Build without Docker — from a chroot directory or a Dockerfile.
-@item oci2bin mcp-serve [--allow-net] [--allow-mount PATH] [--allow-mount-rw PATH]
-Serve the Model Context Protocol interface for AI-agent integration.
+@item ./app.bin mcp-serve [--allow-net] [--allow-image PATH] [--allow-mount PATH] [--allow-mount-rw PATH]
+Serve the Model Context Protocol interface for AI-agent integration. Only
+the serving artifact is executable by default; @option{--allow-image PATH}
+grants an additional exact binary.
 @end table
 
 @c ─────────────────────────────────────────────────────────────────────────────

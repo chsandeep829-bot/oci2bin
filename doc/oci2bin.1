@@ -1003,8 +1003,11 @@ Bring a declarative stack of binaries up and down (see the documentation for
 the stack-file format).
 .
 .TP
-.B oci2bin mcp\-serve \fR[\fB\-\-allow\-net\fR] [\fB\-\-allow\-mount \fIPATH\fR] [\fB\-\-allow\-mount\-rw \fIPATH\fR]
+.B ./app.bin mcp\-serve \fR[\fB\-\-allow\-net\fR] [\fB\-\-allow\-image \fIPATH\fR] [\fB\-\-allow\-mount \fIPATH\fR] [\fB\-\-allow\-mount\-rw \fIPATH\fR]
 Serve the Model Context Protocol interface for AI-agent integration.
+Only the serving artifact may be run or inspected by default.
+.B \-\-allow\-image
+grants an additional exact executable path (up to 16 images).
 Host mounts requested over MCP are denied unless their host path lies under a
 root allowed with
 .B \-\-allow\-mount

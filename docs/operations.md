@@ -427,12 +427,15 @@ Common checks:
 ## MCP Server
 
 ```bash
-oci2bin mcp-serve
+./app.bin mcp-serve
 ```
 
 The MCP server exposes `oci2bin` functionality to AI agents through structured
 tool calls. See [Commands](reference/commands.md) for its mount, network,
 image and environment rules.
+Only the artifact serving the MCP session may be run or inspected by default.
+To let the agent use another trusted binary, start the server with
+`--allow-image /absolute/path/to/app.bin`.
 
 ## Local Validation
 

@@ -126,8 +126,8 @@ process.
 
 Normally the loader prepares a root filesystem from the embedded image layers.
 The merged tree is cached under `${XDG_CACHE_HOME:-~/.cache}/oci2bin/rootfs/`
-keyed by the SHA-256 of the image config (read directly from the embedded tar,
-so a warm launch neither copies nor unpacks the payload); a run puts a private
+keyed by a SHA-256 hash of the exact embedded payload bytes (so a warm launch
+hashes the payload but neither copies nor unpacks it); a run puts a private
 writable layer over it, kernel overlayfs in the user namespace, then
 `fuse-overlayfs`, then a reflink/copy, and never writes to the shared tree.
 Entries are published by atomic rename and re-verified against a stored

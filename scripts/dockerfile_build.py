@@ -1148,9 +1148,22 @@ def _mount_cache(m: dict, state: _State) -> tuple:
     cache_id = m.get("id") or target.replace("/", "_").strip("_")
     # Sanitise cache_id: only allow safe characters.
     safe_id = re.sub(r"[^a-zA-Z0-9._-]", "_", cache_id)
-    cache_dir = os.path.expanduser(
-        os.path.join("~", ".cache", "oci2bin", "build-cache", safe_id))
+    if safe_id in (".", ".."):
+        print("error: RUN cache id must name a cache directory",
+              file=sys.stderr)
+        sys.exit(1)
+    cache_root = os.path.expanduser(
+        os.path.join("~", ".cache", "oci2bin", "build-cache"))
+    cache_dir = os.path.join(cache_root, safe_id)
+    os.makedirs(cache_root, mode=0o700, exist_ok=True)
     os.makedirs(cache_dir, exist_ok=True)
+    # A previous build can leave a symlink at the cache id. mount --bind
+    # follows it, so verify the destination still is a direct child.
+    if os.path.dirname(os.path.realpath(cache_dir)) != \
+            os.path.realpath(cache_root):
+        print("error: RUN cache id resolves outside build-cache",
+              file=sys.stderr)
+        sys.exit(1)
 
     dst_in_rootfs = _safe_resolve(state.rootfs, "/" + target.lstrip("/"))
     os.makedirs(dst_in_rootfs, exist_ok=True)
@@ -1591,38 +1604,37 @@ def _do_run(state: _State, args: str, heredocs=None) -> None:
     # Translate --mount options into shell commands + cleanup list.
     mount_cmds, cleanup_paths, ssh_targets = _build_mount_cmds(mounts, state)
 
-    # Build the RUN environment from scratch.  Inheriting os.environ
-    # would expose the host's tokens, cloud creds, proxy settings, CI
-    # variables, and so on to whatever command the Dockerfile chose
-    # to run — which is exactly the leak BuildKit explicitly avoids.
-    # Start with a minimal safe base, then layer image ENV + declared
-    # build-args + the SSH_AUTH_SOCK pointer for --mount=type=ssh.
-    run_env = {
+    # Host helpers run before chroot.  Never pass image ENV or build args to
+    # them: PATH could select a malicious helper and LD_PRELOAD could run
+    # image code in the host's mount namespace.
+    host_env = {
         "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:"
                 "/usr/bin:/sbin:/bin",
         "HOME": "/root",
         "TERM": "xterm",
-        # Disable debconf prompts in apt-based images during RUN steps.
-        "DEBIAN_FRONTEND": "noninteractive",
     }
-    # Image ENV (Dockerfile ENV directives + inherited from FROM image).
+    for k in ("LANG", "LC_ALL"):
+        if k in os.environ:
+            host_env[k] = os.environ[k]
+
+    # Export image variables only after chroot, inside the image shell.
+    image_env = dict(host_env)
+    image_env["DEBIAN_FRONTEND"] = "noninteractive"
     for kv in state.env:
         if "=" in kv:
             k, v = kv.split("=", 1)
-            run_env[k] = v
-    # Declared build-args (only those the user explicitly passed via
-    # --build-arg KEY=VAL — we read those into state.build_args at
-    # parse time, so this is an allowlist, not a host leak).
+            image_env[k] = v
     for k, v in state.build_args.items():
-        run_env[k] = v
+        image_env[k] = v
     if ssh_targets:
-        # Point SSH_AUTH_SOCK at the first ssh mount target inside the container.
-        run_env["SSH_AUTH_SOCK"] = ssh_targets[0]
-    # `unshare` itself needs to find a few host commands; pull just
-    # those control variables across without leaking secrets.
-    for k in ("LANG", "LC_ALL"):
-        if k in os.environ:
-            run_env[k] = os.environ[k]
+        image_env["SSH_AUTH_SOCK"] = ssh_targets[0]
+    export_cmds = []
+    for k, v in image_env.items():
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", k):
+            print(f"error: RUN: invalid environment name: {k!r}",
+                  file=sys.stderr)
+            sys.exit(1)
+        export_cmds.append(f"export {k}={shlex.quote(v)}")
 
     # What runs inside the chroot, with Docker's semantics: exec form runs
     # the argv as is; shell form runs `SHELL + [cmd]` (default /bin/sh -c) —
@@ -1650,7 +1662,8 @@ def _do_run(state: _State, args: str, heredocs=None) -> None:
               f"to the built image", file=sys.stderr)
 
     workdir = state.workdir or "/"
-    in_root = ("mkdir -p -- \"$0\" 2>/dev/null; "
+    in_root = ("; ".join(export_cmds) + "; " +
+               "mkdir -p -- \"$0\" 2>/dev/null; "
                "cd -- \"$0\" && exec \"$@\"")
 
     try:
@@ -1674,7 +1687,7 @@ def _do_run(state: _State, args: str, heredocs=None) -> None:
              "--mount", "--pid", "--fork",
              "sh", "-ec", inner],
             check=True,
-            env=run_env,
+            env=host_env,
         )
     finally:
         # Remove secret/ssh placeholder files left as mount targets.

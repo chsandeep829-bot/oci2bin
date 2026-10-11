@@ -3638,6 +3638,25 @@ static void test_mcp_review_fixes(void)
     ASSERT(mcp_validate_image(elf, real, sizeof(real)) != NULL,
            "mcp_image: ELF without OCI2BIN_META rejected");
 
+    /* A marker can be appended to any host ELF. It is not authentication. */
+    f = fopen(elf, "ab");
+    if (f)
+    {
+        const unsigned char meta[] =
+        { 23, 0, 0, 0, 'O', 'C', 'I', '2', 'B', 'I', 'N', '_', 'M', 'E',
+          'T', 'A', 0, '{', '}', 0, 0, 0, 0 };
+        fwrite(meta, 1, sizeof(meta), f);
+        fclose(f);
+    }
+    const char* untrusted = mcp_validate_image(elf, real, sizeof(real));
+    ASSERT(untrusted && strstr(untrusted, "not allowed") != NULL,
+           "mcp_image: forged metadata does not grant host execution");
+    ASSERT_INT_EQ(mcp_allow_image(elf), 0,
+                  "mcp_image: operator may explicitly trust an image");
+    ASSERT(mcp_validate_image(elf, real, sizeof(real)) == NULL,
+           "mcp_image: explicitly trusted image accepted");
+    g_mcp_n_images = 0;
+
     /* A binary under a writable mount root is refused even if valid. */
     g_mcp_n_mount_roots = 1;
     snprintf(g_mcp_mount_roots[0].path, sizeof(g_mcp_mount_roots[0].path),
@@ -8003,12 +8022,8 @@ static void test_sha256_vectors(void)
                   "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0",
                   "sha256: one million a");
 
-    /* The cache key is a prefixed hash of the config bytes. */
-    rootfs_cache_key_from_config("{\"a\":1}", 7, hex);
-    ASSERT_STR_EQ(hex,
-                  "3cfa3ebb84ee95b9d1f46a19d3df723683416971757896172ed5697178c2002c",
-                  "cache key: prefix + config bytes");
-    ASSERT(is_hex_key(hex), "cache key: 64 lowercase hex chars");
+    ASSERT(is_hex_key("3cfa3ebb84ee95b9d1f46a19d3df723683416971757896172ed5697178c2002c"),
+           "cache key: 64 lowercase hex chars");
     ASSERT(!is_hex_key("3CFA"), "is_hex_key: rejects short/uppercase");
 }
 
@@ -8121,9 +8136,22 @@ static void test_embedded_tar_config_key(void)
     char key[65] = {0};
     ASSERT_INT_EQ(rootfs_cache_key_from_embedded_tar(self, key), 0,
                   "embedded tar: key derived without unpacking");
-    char want[65];
-    rootfs_cache_key_from_config(config, strlen(config), want);
-    ASSERT_STR_EQ(key, want, "embedded tar: key equals config hash");
+    ASSERT(is_hex_key(key), "embedded tar: payload key is a SHA-256 hex string");
+    char prior_key[65];
+    memcpy(prior_key, key, sizeof(prior_key));
+    sfd = open(self, O_RDONLY);
+    ASSERT_INT_EQ(embedded_tar_find_member(sfd, sizeof(pad), off,
+                                           "blobs/sha256/otherfile", &moff,
+                                           &mlen), 1,
+                  "embedded tar: locate unrelated member to change");
+    close(sfd);
+    fd = open(self, O_WRONLY);
+    pwrite(fd, "!", 1, (off_t)moff);
+    close(fd);
+    ASSERT_INT_EQ(rootfs_cache_key_from_embedded_tar(self, key), 0,
+                  "embedded tar: key after changing unrelated layer data");
+    ASSERT(strcmp(prior_key, key) != 0,
+           "embedded tar: changed payload cannot share config cache key");
 
     /* A zstd or age header at the payload offset forces the slow path. */
     unsigned char zmagic[4] = {0x28, 0xB5, 0x2F, 0xFD};

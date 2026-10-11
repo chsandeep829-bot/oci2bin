@@ -1,15 +1,4 @@
-"""
-Regression test: Dockerfile RUN must not inherit the host's
-environment. Construct the env dict the same way _do_run does,
-seed os.environ with a sentinel, and assert the sentinel is not
-in the resulting env.
-
-The actual `unshare` invocation needs root or rootless tooling and a
-populated rootfs, neither of which we set up here. Instead we exercise
-the env-construction logic in isolation by replicating the relevant
-section. If the production code drifts from this construction, the
-test is updated alongside.
-"""
+"""RUN gives host helpers a fixed environment and exports image ENV in chroot."""
 
 import importlib.util
 import os
@@ -17,108 +6,69 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
-
-_ROOT = pathlib.Path(__file__).resolve().parent.parent
-_SPEC = importlib.util.spec_from_file_location(
-    "dockerfile_build",
-    _ROOT / "scripts" / "dockerfile_build.py",
-)
-_MOD = importlib.util.module_from_spec(_SPEC)
-sys.path.insert(0, str(_ROOT / "scripts"))
-_SPEC.loader.exec_module(_MOD)
-
-
-def _build_run_env(state, ssh_targets):
-    """Mirror the env construction at the top of _do_run. Kept in sync
-    with that function; if it changes there, change it here."""
-    run_env = {
-        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:"
-                "/usr/bin:/sbin:/bin",
-        "HOME": "/root",
-        "TERM": "xterm",
-        "DEBIAN_FRONTEND": "noninteractive",
-    }
-    for kv in state.env:
-        if "=" in kv:
-            k, v = kv.split("=", 1)
-            run_env[k] = v
-    for k, v in state.build_args.items():
-        run_env[k] = v
-    if ssh_targets:
-        run_env["SSH_AUTH_SOCK"] = ssh_targets[0]
-    for k in ("LANG", "LC_ALL"):
-        if k in os.environ:
-            run_env[k] = os.environ[k]
-    return run_env
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+SPEC = importlib.util.spec_from_file_location(
+    "dockerfile_build", ROOT / "scripts" / "dockerfile_build.py")
+MOD = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MOD)
 
 
 class RunEnvTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-        self.state = _MOD._State(
-            context_dir=self.tmp,
-            build_args={},
-            build_secrets={},
-            arch="amd64",
-        )
+        self.tmp = tempfile.TemporaryDirectory()
+        root = pathlib.Path(self.tmp.name) / "rootfs"
+        (root / "bin").mkdir(parents=True)
+        (root / "bin" / "sh").write_text("dummy")
+        self.state = MOD._State(self.tmp.name, {}, {}, "amd64")
+        self.state.rootfs = str(root)
 
     def tearDown(self):
-        import shutil
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        self.tmp.cleanup()
 
-    def test_host_secret_not_leaked(self):
-        sentinel = "OCI2BIN_TEST_SENTINEL_aef91"
-        os.environ[sentinel] = "if you can read me, the env leaked"
-        try:
-            env = _build_run_env(self.state, ssh_targets=[])
-        finally:
-            del os.environ[sentinel]
-        self.assertNotIn(sentinel, env)
+    def test_host_helpers_never_receive_image_env(self):
+        self.state.env = ["PATH=/malicious/bin", "LD_PRELOAD=/malicious/lib.so",
+                          "VALUE=quoted' value"]
+        self.state.build_args = {"AWS_SECRET_ACCESS_KEY": "sentinel"}
+        with mock.patch.object(MOD.subprocess, "run") as run:
+            MOD._do_run(self.state, "true")
+        args, kwargs = run.call_args
+        self.assertEqual(args[0][0], "unshare")
+        host_env = kwargs["env"]
+        self.assertEqual(host_env["PATH"],
+                         "/usr/local/sbin:/usr/local/bin:/usr/sbin:"
+                         "/usr/bin:/sbin:/bin")
+        self.assertNotIn("LD_PRELOAD", host_env)
+        self.assertNotIn("AWS_SECRET_ACCESS_KEY", host_env)
+        inner = args[0][-1]
+        self.assertIn("export PATH=/malicious/bin", inner)
+        self.assertIn("export LD_PRELOAD=/malicious/lib.so", inner)
+        self.assertIn("export AWS_SECRET_ACCESS_KEY=sentinel", inner)
+        self.assertIn("quoted", inner)
+        self.assertLess(inner.index("chroot "), inner.index("export PATH="))
 
-    def test_aws_creds_not_leaked(self):
-        for k, v in (("AWS_SECRET_ACCESS_KEY", "x"),
-                     ("AWS_SESSION_TOKEN",     "y"),
-                     ("GH_TOKEN",              "z")):
-            os.environ[k] = v
-        try:
-            env = _build_run_env(self.state, ssh_targets=[])
-        finally:
-            for k in ("AWS_SECRET_ACCESS_KEY",
-                      "AWS_SESSION_TOKEN",
-                      "GH_TOKEN"):
-                os.environ.pop(k, None)
-        for k in ("AWS_SECRET_ACCESS_KEY",
-                  "AWS_SESSION_TOKEN",
-                  "GH_TOKEN"):
-            self.assertNotIn(k, env, f"{k} leaked")
+    def test_invalid_environment_name_fails_closed(self):
+        self.state.env = ["X;touch /tmp/bad=value"]
+        with mock.patch.object(MOD.subprocess, "run") as run:
+            with self.assertRaises(SystemExit):
+                MOD._do_run(self.state, "true")
+        run.assert_not_called()
 
-    def test_image_env_passes_through(self):
-        self.state.env = ["FOO=bar", "BAZ=qux"]
-        env = _build_run_env(self.state, ssh_targets=[])
-        self.assertEqual(env["FOO"], "bar")
-        self.assertEqual(env["BAZ"], "qux")
-
-    def test_build_arg_passes_through(self):
-        self.state.build_args = {"VERSION": "1.2.3"}
-        env = _build_run_env(self.state, ssh_targets=[])
-        self.assertEqual(env["VERSION"], "1.2.3")
-
-    def test_minimal_baseline(self):
-        env = _build_run_env(self.state, ssh_targets=[])
-        for k in ("PATH", "HOME", "TERM", "DEBIAN_FRONTEND"):
-            self.assertIn(k, env)
-        self.assertTrue(env["PATH"].startswith("/usr/local/sbin"))
-
-    def test_ssh_target_set_when_present(self):
-        env = _build_run_env(self.state,
-                             ssh_targets=["/run/buildkit/ssh.sock"])
-        self.assertEqual(env["SSH_AUTH_SOCK"],
-                         "/run/buildkit/ssh.sock")
-
-    def test_ssh_target_absent_by_default(self):
-        env = _build_run_env(self.state, ssh_targets=[])
-        self.assertNotIn("SSH_AUTH_SOCK", env)
+    def test_cache_mount_cannot_select_parent_or_symlink(self):
+        host_home = pathlib.Path(self.tmp.name) / "home"
+        host_home.mkdir()
+        with mock.patch.dict(os.environ, {"HOME": str(host_home)}):
+            with self.assertRaises(SystemExit):
+                MOD._mount_cache({"target": "/cache", "id": ".."},
+                                 self.state)
+            cache_root = host_home / ".cache" / "oci2bin" / "build-cache"
+            cache_root.mkdir(parents=True)
+            (cache_root / "escape").symlink_to(host_home)
+            with self.assertRaises(SystemExit):
+                MOD._mount_cache({"target": "/cache", "id": "escape"},
+                                 self.state)
 
 
 if __name__ == "__main__":

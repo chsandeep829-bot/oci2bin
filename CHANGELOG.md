@@ -4,6 +4,20 @@ All notable changes to oci2bin are documented here.
 
 ## [Unreleased]
 
+### Security
+
+- Dockerfile `RUN` now gives host helpers a fixed environment and exports
+  image `ENV` and build arguments only after entering the image rootfs.
+  Image-controlled `PATH` and `LD_PRELOAD` cannot redirect host helpers.
+- Dockerfile `RUN --mount=type=cache` rejects `id=..` and symlinked IDs that
+  resolve outside its build cache, keeping image commands out of sibling
+  host cache directories.
+- Rootfs cache keys now hash the exact embedded payload. Distinct layers
+  cannot share a cache entry by claiming the same image configuration.
+- MCP `run_container` and `inspect_image` now accept only the server's own
+  artifact and exact binaries granted by the operator with `--allow-image`.
+  A forged metadata marker is no longer enough to execute a host binary.
+
 ### Changed
 
 - **The `--init` / `--restart` / `--health` supervisor is event-driven.**

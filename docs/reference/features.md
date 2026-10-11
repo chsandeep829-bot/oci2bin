@@ -244,7 +244,8 @@ byte-for-byte reproducible.
 | Host capability checks (build host) | `oci2bin doctor`, `oci2bin doctor --json` |
 | Live probes and install of the missing packages | `oci2bin doctor --probe`, `oci2bin doctor --fix` |
 | Host capability checks (runtime host) | `./app.bin --doctor` |
-| MCP server | `oci2bin mcp-serve` |
+| MCP server | `./app.bin mcp-serve` |
+| MCP executable allowlist (own image only by default) | `mcp-serve --allow-image PATH` |
 | MCP host-mount allowlist (deny by default) | `mcp-serve --allow-mount PATH` / `--allow-mount-rw PATH` |
 | Prometheus metrics socket | `--metrics-socket PATH` |
 | Notifications | `--notify ntfy://...`, `gotify://`, `discord://`, `slack://`, `https://` |

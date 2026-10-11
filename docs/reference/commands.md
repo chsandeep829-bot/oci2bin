@@ -193,7 +193,7 @@ oci2bin checkpoint NAME
 oci2bin restore NAME
 oci2bin top [--once] [--interval SEC]
 oci2bin doctor [--json] [--probe] [--fix]
-oci2bin mcp-serve [--allow-net] [--allow-mount PATH] [--allow-mount-rw PATH]
+./app.bin mcp-serve [--allow-net] [--allow-image PATH] [--allow-mount PATH] [--allow-mount-rw PATH]
 ```
 
 ## Signing Commands
@@ -230,9 +230,12 @@ requests it. Host mounts are denied outright unless a root is allowed with
 `--allow-mount` (read-only) or `--allow-mount-rw`; mounts with no explicit
 suffix are read-only, and `:rw` is refused on a read-only root.
 
-The `image` of `run_container` / `inspect_image` must be an oci2bin binary (an
-ELF carrying an `OCI2BIN_META` block) outside every `--allow-mount-rw` root, so
-a client cannot drop a script into a writable root and have the server run it.
+`run_container` and `inspect_image` may execute only the artifact serving the
+session or exact executable paths the operator grants with `--allow-image PATH`
+(repeatable, up to 16). They also refuse images inside a `--allow-mount-rw`
+root. An `OCI2BIN_META` block is checked for format, but is not proof that an
+executable is trusted: an arbitrary ELF can append one. Grant only binaries
+you trust to run on the host.
 `run_container` forwards only `KEY=VALUE` environment entries — a bare `NAME`
 would copy the server's own environment into the container. `exec_in_container`
 runs the command as root of the container's user namespace, inside its root

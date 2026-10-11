@@ -138,6 +138,11 @@ environment variables for the shell. Line continuations may contain comment
 lines, and CRLF files are accepted. Symlinks inside the rootfs resolve as they
 would in the container (an absolute `/var/run -> /run` is re-rooted, never
 followed onto the host).
+During `RUN`, host setup commands use a fixed environment. Image `ENV` and
+build arguments become visible only inside the image rootfs, so an image
+cannot change which host helper runs through `PATH` or `LD_PRELOAD`.
+Cache mount IDs stay inside the build cache; parent paths and symlinks out of
+the cache are refused.
 
 Limitations: `RUN` executes as root even after `USER` (only uid 0 is mapped in
 the rootless build namespace; `USER` still sets the image's runtime user), and

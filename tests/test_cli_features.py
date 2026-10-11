@@ -283,7 +283,7 @@ class TestCliFeatures(unittest.TestCase):
              "--image-name", "cache-test:latest", "--output", str(out_path)],
             capture_output=True, text=True, timeout=300)
         self.assertEqual(result.returncode, 0, msg=result.stderr)
-        return out_path, config_raw
+        return out_path, tar_bytes
 
     def _run_cached(self, binary, xdg, tmp, *extra, env_extra=None):
         env = dict(os.environ, XDG_CACHE_HOME=str(xdg),
@@ -299,12 +299,12 @@ class TestCliFeatures(unittest.TestCase):
     def test_rootfs_cache_reuses_extraction_and_isolates_writes(self):
         if not _userns_available():
             self.skipTest("user namespaces unavailable; cannot run binaries")
-        binary, config_raw = self._build_writer_binary("cached.bin")
+        binary, payload_bytes = self._build_writer_binary("cached.bin")
         xdg = self.tmpdir / "xdg-cache"
         tmp = self.tmpdir / "runtime-tmp"
         tmp.mkdir(parents=True, exist_ok=True)
         expected_key = hashlib.sha256(
-            b"oci2bin-rootfs-cache-v1\n" + config_raw).hexdigest()
+            b"oci2bin-rootfs-cache-payload-v2\n" + payload_bytes).hexdigest()
         entry = xdg / "oci2bin" / "rootfs" / expected_key
 
         first = self._run_cached(binary, xdg, tmp)
