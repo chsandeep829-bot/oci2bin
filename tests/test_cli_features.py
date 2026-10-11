@@ -225,7 +225,7 @@ class TestCliFeatures(unittest.TestCase):
         cls._tmp.cleanup()
 
     def _build_binary(self, name, *, labels=None, healthcheck=None,
-                      self_update_url=None, pin_digest=None):
+                      pin_digest=None):
         tar_path = self.tmpdir / f"{name}.tar"
         tar_path.parent.mkdir(parents=True, exist_ok=True)
         tar_path.write_bytes(_minimal_oci_tar(labels=labels,
@@ -239,8 +239,6 @@ class TestCliFeatures(unittest.TestCase):
             "--image-name", "test:latest",
             "--output", str(out_path),
         ]
-        if self_update_url:
-            args.extend(["--self-update-url", self_update_url])
         if pin_digest:
             args.extend(["--pin-digest", pin_digest])
         result = subprocess.run(args, capture_output=True, text=True, timeout=300)
@@ -804,68 +802,6 @@ class TestCliFeatures(unittest.TestCase):
                         proc.kill()
                         proc.wait(timeout=5)
 
-    def test_check_update_uses_signed_manifest(self):
-        key = self.tmpdir / "update.key"
-        pub = self.tmpdir / "update.pub"
-        subprocess.run(
-            ["openssl", "ecparam", "-name", "prime256v1", "-genkey",
-             "-noout", "-out", str(key)],
-            check=True, capture_output=True, timeout=30,
-        )
-        subprocess.run(
-            ["openssl", "ec", "-in", str(key), "-pubout", "-out", str(pub)],
-            check=True, capture_output=True, timeout=30,
-        )
-
-        new_binary = self._build_binary("new.bin")
-        manifest = self.tmpdir / "update.json"
-        manifest.write_text(json.dumps({
-            "version": "9.9.9",
-            "url": new_binary.resolve().as_uri(),
-            "digest": "sha512:" + hashlib.sha512(
-                new_binary.read_bytes()
-            ).hexdigest(),
-        }), encoding="utf-8")
-        subprocess.run(
-            [str(OCI2BIN), "sign-file", "--key", str(key), "--in",
-             str(manifest), "--out", str(manifest) + ".sig",
-             "--hash-algorithm", "sha512"],
-            check=True, capture_output=True, timeout=30,
-        )
-
-        install_root = self.tmpdir / "signed-install"
-        scripts_dir = install_root / "scripts"
-        bin_dir = install_root / "bin"
-        scripts_dir.mkdir(parents=True, exist_ok=True)
-        bin_dir.mkdir(parents=True, exist_ok=True)
-        verifier_script = scripts_dir / "sign_binary.py"
-        verifier_script.write_bytes(
-            (ROOT / "scripts" / "sign_binary.py").read_bytes()
-        )
-        # The loader refuses to exec a group/world-writable verifier helper
-        # (loader.c). `make install` stages it 0644; mirror that here so the
-        # test does not depend on the runner's umask (e.g. 0002 on Debian).
-        verifier_script.chmod(0o644)
-
-        binary = self._build_binary(
-            "signed-install/bin/current.bin",
-            self_update_url=manifest.resolve().as_uri(),
-            pin_digest="sha512:auto",
-        )
-        subprocess.run(
-            [str(OCI2BIN), "sign", "--key", str(key), "--in", str(binary),
-             "--hash-algorithm", "sha512"],
-            check=True, capture_output=True, timeout=30,
-        )
-        result = subprocess.run(
-            [str(binary), "--check-update", "--verify-key", str(pub)],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        self.assertEqual(result.returncode, 10, msg=result.stderr)
-        self.assertIn("update available", result.stderr)
-
     def test_checkpoint_requires_criu_when_missing(self):
         env = os.environ.copy()
         env["HOME"] = str(self.tmpdir / "home-no-criu")
@@ -1077,6 +1013,31 @@ class TestBuildArgsReplay(unittest.TestCase):
         shown = self._wrapper("inspect", str(out))
         self.assertIn("demo=one", shown.stdout)
         self.assertIn("spaced=a b", shown.stdout)
+
+    def test_update_skips_removed_option_from_older_artifact(self):
+        out = self.tmpdir / "old-update-option.bin"
+        build = self._wrapper("--oci-dir", str(self.layout), "--no-libkrun",
+                              "--label", "padding=" + "x" * 160,
+                              "legacy-update:latest", str(out))
+        self.assertEqual(build.returncode, 0, msg=build.stderr)
+
+        blob = bytearray(out.read_bytes())
+        magic = blob.rfind(b"OCI2BIN_META\x00")
+        total = struct.unpack_from("<I", blob, magic - 4)[0]
+        start, end = magic + 13, (magic - 4) + total
+        meta = json.loads(bytes(blob[start:end]).rstrip(b"\x00"))
+        meta["build_args"][-2:] = ["--self-update-url",
+                                   "https://example.test/old.json"]
+        rewritten = json.dumps(meta, separators=(",", ":")).encode()
+        self.assertLessEqual(len(rewritten), end - start)
+        blob[start:end] = rewritten.ljust(end - start, b"\x00")
+        out.write_bytes(blob)
+
+        update = self._wrapper("update", str(out))
+        self.assertEqual(update.returncode, 0, msg=update.stderr)
+        self.assertNotIn("--self-update-url", update.stderr)
+        self.assertNotIn("--self-update-url",
+                         self._meta(out).get("build_args", []))
 
     def test_update_says_when_no_options_were_recorded(self):
         """A binary from an older builder carries no build_args: update

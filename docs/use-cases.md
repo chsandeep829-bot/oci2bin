@@ -278,21 +278,3 @@ Run a command while frozen, then thaw automatically:
 ```bash
 oci2bin freeze mydb -- sqlite3 /data/app.db 'pragma integrity_check'
 ```
-
-## AI Agent Integration
-
-Start the MCP server:
-
-```bash
-./app.bin mcp-serve
-```
-
-Use it when an AI agent should inspect, build, or manage `oci2bin` artifacts
-through a structured tool interface instead of shelling out manually.
-
-The MCP server denies networking and host mounts by default. Enable host
-networking explicitly with `--allow-net`; allow only required host paths with
-`--allow-mount` (read-only) or `--allow-mount-rw`. Treat those flags as trust
-boundaries for the calling agent.
-The server permits its own image by default. Grant other trusted executables
-one at a time with `--allow-image /absolute/path/to/app.bin`.

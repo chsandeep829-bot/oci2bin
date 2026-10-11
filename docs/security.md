@@ -413,7 +413,7 @@ is handed to `openssl` through the embedded verifier, and only when both
 or `/sbin` — never through `$PATH` — so a stub planted in an
 attacker-writable `$PATH` entry cannot make verification report success.
 The `oci2bin sign` / `verify` commands on the build host still use
-`openssl`, as does `--self-update`.
+`openssl`.
 
 Detached file signing:
 

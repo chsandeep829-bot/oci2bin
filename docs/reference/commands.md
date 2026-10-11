@@ -36,7 +36,6 @@ Common build options:
 --password-file FILE
 --compress-binary zstd
 --require-signed PUB
---self-update-url URL
 --pin-digest DIGEST
 --reproducible
 --offline-only
@@ -145,8 +144,6 @@ Common runtime options:
 --vm
 --vmm PATH
 --verify-key PATH
---check-update
---self-update
 --config PATH
 --metrics-socket PATH
 --notify URL
@@ -182,7 +179,7 @@ oci2bin thaw NAME
 oci2bin reconstruct SRC [--output PATH] [--no-strip] [--label-prefix PREFIX]
 oci2bin push BINARY REF
 oci2bin sbom BINARY [--format spdx|cyclonedx]
-oci2bin update [--check] [--verify-key PATH] BINARY   # replays the recorded build options
+oci2bin update [--check] BINARY   # replays the recorded build options
 oci2bin run [BUILD_OPTIONS] IMAGE [-- RUNTIME_ARGS...]
 oci2bin systemd BINARY [--user] [--restart POLICY]
 oci2bin healthcheck BINARY [--pid PID]
@@ -193,7 +190,6 @@ oci2bin checkpoint NAME
 oci2bin restore NAME
 oci2bin top [--once] [--interval SEC]
 oci2bin doctor [--json] [--probe] [--fix]
-./app.bin mcp-serve [--allow-net] [--allow-image PATH] [--allow-mount PATH] [--allow-mount-rw PATH]
 ```
 
 ## Signing Commands
@@ -223,24 +219,6 @@ oci2bin stack config [-f stack.yaml]
 `down` also accepts the stack name. `logs` is addressed by stack name (the
 file's `name:`, default `stack`) with an optional service, and `-f` there means
 *follow* (like `tail -f`), not a file.
-
-`mcp-serve` starts a stdio JSON-RPC MCP server. It keeps networking disabled by
-default; `--allow-net` only permits host networking when the MCP caller also
-requests it. Host mounts are denied outright unless a root is allowed with
-`--allow-mount` (read-only) or `--allow-mount-rw`; mounts with no explicit
-suffix are read-only, and `:rw` is refused on a read-only root.
-
-`run_container` and `inspect_image` may execute only the artifact serving the
-session or exact executable paths the operator grants with `--allow-image PATH`
-(repeatable, up to 16). They also refuse images inside a `--allow-mount-rw`
-root. An `OCI2BIN_META` block is checked for format, but is not proof that an
-executable is trusted: an arbitrary ELF can append one. Grant only binaries
-you trust to run on the host.
-`run_container` forwards only `KEY=VALUE` environment entries — a bare `NAME`
-would copy the server's own environment into the container. `exec_in_container`
-runs the command as root of the container's user namespace, inside its root
-filesystem and namespaces, not with the server's credentials. Tool results are
-always JSON strings.
 
 ## Build Without Docker
 

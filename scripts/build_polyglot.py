@@ -721,8 +721,8 @@ def validate_pin_digest(pin_digest):
 REPRODUCIBLE_TIMESTAMP = '1970-01-01T00:00:00Z'
 
 
-def build_meta_block(image_name, digest=None, self_update_url=None,
-                     pin_digest=None, reproducible=False,
+def build_meta_block(image_name, digest=None, pin_digest=None,
+                     reproducible=False,
                      offline_only=False, require_signed_pubkey=None,
                      rootfs_format='tar', payload_encoding='tar',
                      build_args=None):
@@ -751,8 +751,6 @@ def build_meta_block(image_name, digest=None, self_update_url=None,
     }
     if digest:
         meta['digest'] = digest
-    if self_update_url:
-        meta['self_update_url'] = self_update_url
     if build_args is not None:
         # The oci2bin CLI's canonical option list for this build (never the
         # image or output path), so `oci2bin update` replays it exactly.
@@ -1480,7 +1478,7 @@ def build_polyglot(loader_path, image_name, output_path, tar_path=None,
                    label_chunk_bytes=DEFAULT_LABEL_CHUNK_BYTES,
                    loader_dir=DEFAULT_LOADER_DIR,
                    label_prefix=DEFAULT_LABEL_PREFIX,
-                   self_update_url=None, pin_digest=None,
+                   pin_digest=None,
                    use_layer_cache=True, reproducible=False,
                    offline_only=False, user_labels=None,
                    encrypt_recipients=None, encrypt_recipients_files=None,
@@ -1820,7 +1818,6 @@ def build_polyglot(loader_path, image_name, output_path, tar_path=None,
     # 10. Write output (polyglot + metadata block)
     meta_image = image_name_for_meta if image_name_for_meta else image_name
     meta_block = build_meta_block(meta_image, digest,
-                                  self_update_url=self_update_url,
                                   pin_digest=pin_digest,
                                   reproducible=reproducible,
                                   offline_only=offline_only,
@@ -1894,8 +1891,6 @@ def main():
     parser.add_argument('--digest', default=None,
                         help='Image digest to embed in metadata block '
                              '(e.g. redis@sha256:abc123...)')
-    parser.add_argument('--self-update-url', default=None,
-                        help='Signed update manifest URL to embed in metadata')
     parser.add_argument('--build-args-json', default=None, metavar='JSON',
                         help='JSON list of the oci2bin build options to record '
                              'in the metadata block (replayed by oci2bin update)')
@@ -2033,10 +2028,6 @@ def main():
         print(f"Initramfs not found: {args.initramfs}", file=sys.stderr)
         sys.exit(1)
 
-    if args.self_update_url is not None and not args.self_update_url:
-        print('self-update URL must not be empty', file=sys.stderr)
-        sys.exit(1)
-
     if args.pin_digest is not None:
         try:
             validate_pin_digest(args.pin_digest)
@@ -2114,7 +2105,6 @@ def main():
                    label_chunk_bytes=args.label_chunk_size,
                    loader_dir=args.loader_dir,
                    label_prefix=args.label_prefix,
-                   self_update_url=args.self_update_url,
                    pin_digest=args.pin_digest,
                    use_layer_cache=not args.no_cache,
                    reproducible=args.reproducible or args.offline_only,

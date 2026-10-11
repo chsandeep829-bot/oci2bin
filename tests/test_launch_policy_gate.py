@@ -4,8 +4,8 @@ entry point that touches the embedded payload.
 
 These assert on the structure of main() in src/loader.c rather than on runtime
 behaviour, because the bug they guard against is an *ordering* bug: the policy
-check sat at step 3 of main()'s dispatcher while OCI2BIN_INSPECT and mcp-serve
-were dispatched at step 1, so both extracted and acted on untrusted layer data
+check sat at step 3 of main()'s dispatcher while OCI2BIN_INSPECT was
+dispatched at step 1, so it extracted and acted on untrusted layer data
 with the policy never consulted. A dispatcher gains new branches over time, and
 a runtime test only covers the branches someone remembered to write.
 """
@@ -23,7 +23,6 @@ GATE = "enforce_launch_policy"
 # here must be preceded by a GATE call inside main().
 PAYLOAD_ENTRY_POINTS = (
     "inspect_image_main(",
-    "mcp_serve_main(",
 )
 
 # Individual checks that make up the gate. They must be reached *through*
@@ -69,7 +68,7 @@ class LaunchPolicyGateTest(unittest.TestCase):
                 self.assertIn(
                     f"{GATE}(", preceding,
                     f"{entry} is dispatched before the launch policy gate — "
-                    f"this is the OCI2BIN_INSPECT/mcp-serve bypass")
+                    f"this is the OCI2BIN_INSPECT bypass")
 
     def test_inspect_is_gated_inside_its_own_branch(self):
         """The gate is in the OCI2BIN_INSPECT branch, not merely earlier.

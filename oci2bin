@@ -97,7 +97,6 @@
 #   --require-signed PUB  Embed a self-enforcing signature policy: refuse to run
 #                         unless a valid signature from PUB is present (then run
 #                         'oci2bin sign --key PRIV --in BINARY')
-#   --self-update-url URL Embed a signed update-manifest URL into the binary
 #   --pin-digest DIGEST|ALGO:auto
 #                         Embed a pinned canonical digest for runtime integrity checks
 #
@@ -177,7 +176,7 @@
 #                         ~/.local/share/oci2bin/checkpoints/NAME
 #   restore NAME          Restore a CRIU checkpoint from the same directory
 #   top                   Live stats for named running containers
-#   update [--check] [--verify-key PATH] BINARY
+#   update [--check] BINARY
 #                         Rebuild BINARY from its image with the build
 #                         options it recorded (--check: report only)
 #   reconstruct <src>     Rebuild polyglot from an image built with
@@ -234,7 +233,7 @@ need() {
 # nothing for an option the build parser does not know.
 build_option_arity() {
     case "$1" in
-        --arch|--layer|--strip-prefix|--add-file|--add-dir|--oci-dir|--pull-with|--kernel|--initramfs|--label|--label-chunk-size|--loader-dir|--label-prefix|--cosign-key|--compress|--rootfs-format|--entrypoint|--cmd|--self-update-url|--pin-digest|--recipient|--recipients-file|--password-file|--require-signed)
+        --arch|--layer|--strip-prefix|--add-file|--add-dir|--oci-dir|--pull-with|--kernel|--initramfs|--label|--label-chunk-size|--loader-dir|--label-prefix|--cosign-key|--compress|--rootfs-format|--entrypoint|--cmd|--pin-digest|--recipient|--recipients-file|--password-file|--require-signed)
             echo value ;;
         --cache|--no-cache|--reproducible|--offline-only|--strip|--strip-auto|--libkrun|--no-libkrun|--embed-loader-layer|--embed-loader-labels|--verify-cosign|--require-cosign|--squash|--encrypt|--passphrase)
             echo flag ;;
@@ -822,17 +821,11 @@ fi
 if [[ "${1:-}" == "update" ]]; then
     shift
     UPDATE_CHECK_ONLY=0
-    UPDATE_VERIFY_KEY=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --check)
                 UPDATE_CHECK_ONLY=1
                 shift
-                ;;
-            --verify-key)
-                [[ $# -lt 2 ]] && { echo "oci2bin update: --verify-key requires PATH" >&2; exit 1; }
-                UPDATE_VERIFY_KEY="$2"
-                shift 2
                 ;;
             *)
                 break
@@ -840,7 +833,7 @@ if [[ "${1:-}" == "update" ]]; then
         esac
     done
     if [[ $# -lt 1 ]]; then
-        echo "Usage: oci2bin update [--check] [--verify-key PATH] BINARY" >&2
+        echo "Usage: oci2bin update [--check] BINARY" >&2
         exit 1
     fi
     UPDATE_BINARY="$1"
@@ -883,19 +876,6 @@ PYEOF
     if [[ -z "$IMAGE_NAME" ]]; then
         echo "oci2bin update: could not read image name from $UPDATE_BINARY" >&2
         exit 1
-    fi
-
-    SELF_UPDATE_URL="$(python3 - "$META_JSON" <<'PYEOF'
-import json, sys
-meta = json.loads(sys.argv[1])
-print(meta.get("self_update_url",""))
-PYEOF
-)"
-
-    if [[ "$UPDATE_CHECK_ONLY" -eq 1 && -n "$SELF_UPDATE_URL" ]]; then
-        SELF_ARGS=(--check-update)
-        [[ -n "$UPDATE_VERIFY_KEY" ]] && SELF_ARGS+=(--verify-key "$UPDATE_VERIFY_KEY")
-        exec "$UPDATE_BINARY" "${SELF_ARGS[@]}"
     fi
 
     CURRENT_DIGEST="$(python3 - "$META_JSON" <<'PYEOF'
@@ -952,8 +932,20 @@ for a in meta.get("build_args") or []:
     sys.stdout.buffer.write(a.encode("utf-8", "surrogateescape") + b"\0")
 PYEOF
 )
+        UPDATE_REPLAY_ARGS=()
         _i=0
         while [[ "$_i" -lt "${#UPDATE_BUILD_ARGS[@]}" ]]; do
+            # Older artifacts may record this removed build option. Keep
+            # their ordinary build options when rebuilding them.
+            if [[ "${UPDATE_BUILD_ARGS[$_i]}" == "--self-update-url" ]]; then
+                if [[ "$((_i + 1))" -ge "${#UPDATE_BUILD_ARGS[@]}" ]]; then
+                    UPDATE_ARGS_STATE="invalid"
+                    break
+                fi
+                _i=$((_i + 2))
+                continue
+            fi
+            _start="$_i"
             case "$(build_option_arity "${UPDATE_BUILD_ARGS[$_i]}")" in
                 flag)     _i=$((_i + 1)) ;;
                 value)    _i=$((_i + 2)) ;;
@@ -963,9 +955,13 @@ PYEOF
                     ;;
                 *)        UPDATE_ARGS_STATE="invalid"; break ;;
             esac
+            if [[ "$_i" -gt "${#UPDATE_BUILD_ARGS[@]}" ]]; then
+                UPDATE_ARGS_STATE="invalid"
+                break
+            fi
+            UPDATE_REPLAY_ARGS+=("${UPDATE_BUILD_ARGS[@]:_start:_i-_start}")
         done
-        # A value option at the very end has nothing to consume.
-        [[ "$_i" -gt "${#UPDATE_BUILD_ARGS[@]}" ]] && UPDATE_ARGS_STATE="invalid"
+        UPDATE_BUILD_ARGS=("${UPDATE_REPLAY_ARGS[@]}")
     fi
     if [[ "$UPDATE_ARGS_STATE" == "invalid" ]]; then
         echo "oci2bin update: $UPDATE_BINARY carries a malformed build_args record; refusing to replay it" >&2
@@ -2100,7 +2096,6 @@ REQUIRE_SIGNED_KEY=""
 COMPRESS_BINARY=""
 SET_ENTRYPOINT=""
 SET_CMD=""
-SELF_UPDATE_URL=""
 PIN_DIGEST=""
 VERIFY_COSIGN=0
 REQUIRE_COSIGN=0
@@ -2293,11 +2288,6 @@ while [[ $# -gt 0 ]]; do
             REQUIRE_SIGNED_KEY="$2"
             shift 2
             ;;
-        --self-update-url)
-            [[ $# -lt 2 ]] && { echo "oci2bin: --self-update-url requires a URL argument" >&2; exit 1; }
-            SELF_UPDATE_URL="$2"
-            shift 2
-            ;;
         --pin-digest)
             [[ $# -lt 2 ]] && { echo "oci2bin: --pin-digest requires DIGEST or ALGO:auto" >&2; exit 1; }
             PIN_DIGEST="$2"
@@ -2473,7 +2463,6 @@ build_forward_args_for_arch_all() {
     [[ -n "$SET_ENTRYPOINT" ]] && ARCH_ALL_FORWARD_ARGS+=(--entrypoint "$SET_ENTRYPOINT")
     [[ -n "$SET_CMD" ]] && ARCH_ALL_FORWARD_ARGS+=(--cmd "$SET_CMD")
     [[ -n "$REQUIRE_SIGNED_KEY" ]] && ARCH_ALL_FORWARD_ARGS+=(--require-signed "$REQUIRE_SIGNED_KEY")
-    [[ -n "$SELF_UPDATE_URL" ]] && ARCH_ALL_FORWARD_ARGS+=(--self-update-url "$SELF_UPDATE_URL")
     [[ -n "$PIN_DIGEST" ]] && ARCH_ALL_FORWARD_ARGS+=(--pin-digest "$PIN_DIGEST")
     [[ "$VERIFY_COSIGN" -eq 1 ]] && ARCH_ALL_FORWARD_ARGS+=(--verify-cosign)
     [[ "$REQUIRE_COSIGN" -eq 1 ]] && ARCH_ALL_FORWARD_ARGS+=(--require-cosign)
@@ -3108,7 +3097,6 @@ EMBED_LOADER_ARG=()
 [[ -n "$LABEL_CHUNK_SIZE" ]] && EMBED_LOADER_ARG+=(--label-chunk-size "$LABEL_CHUNK_SIZE")
 [[ -n "$LOADER_DIR"       ]] && EMBED_LOADER_ARG+=(--loader-dir "$LOADER_DIR")
 [[ -n "$LABEL_PREFIX"     ]] && EMBED_LOADER_ARG+=(--label-prefix "$LABEL_PREFIX")
-[[ -n "$SELF_UPDATE_URL"  ]] && EMBED_LOADER_ARG+=(--self-update-url "$SELF_UPDATE_URL")
 [[ -n "$PIN_DIGEST"       ]] && EMBED_LOADER_ARG+=(--pin-digest "$PIN_DIGEST")
 [[ "$NO_LAYER_CACHE" -eq 1 ]] && EMBED_LOADER_ARG+=(--no-cache)
 [[ "$REPRODUCIBLE_BUILD" -eq 1 ]] && EMBED_LOADER_ARG+=(--reproducible)

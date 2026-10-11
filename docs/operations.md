@@ -321,26 +321,6 @@ Use push when the image payload should be sent back to an OCI registry.
 
 ## Update
 
-Embed an update manifest URL:
-
-```bash
-oci2bin --self-update-url https://example.test/app.update.json app:latest app.bin
-```
-
-Check for updates:
-
-```bash
-./app.bin --check-update --verify-key pub.pem
-```
-
-Apply an update:
-
-```bash
-./app.bin --self-update --verify-key pub.pem
-```
-
-The manifest is signature-verified before replacement.
-
 Rebuild a binary from its image with the same options it was built with:
 
 ```bash
@@ -351,12 +331,15 @@ oci2bin update --check app.bin
 Every build records its canonical option list (`--arch`, `--strip`,
 `--squash`, `--label`, `--compress-binary`, ... but never the image or output
 path) as `build_args` in the metadata block; `oci2bin inspect` shows it.
-`update` replays exactly that list against the image's current digest, so a
+`update` replays that list against the image's current digest, so a
 rebuilt binary keeps its shape. A binary made by an older oci2bin has no
 record and is rebuilt with default options, which `update` says out loud.
+For older artifacts that recorded `--self-update-url`, `update` skips that
+retired option and replays the remaining build options.
 
-The list is data read from the binary. `update` prints it before rebuilding
-and refuses a list that is not options and their values (so it cannot swap
+The list is data read from the binary. `update` prints the options it will
+replay before rebuilding and refuses a list that is not options and their
+values (so it cannot swap
 in another image or output path), but options such as `--add-file` or
 `--password-file` name host paths: review the printed list before updating a
 binary you did not build. A build pinned with an explicit `--pin-digest` is
@@ -423,19 +406,6 @@ Common checks:
 - `zstd` exists when running zstd-compressed binaries
 - age identity or password is available for encrypted binaries
 - KVM and VM backend support exist for VM mode
-
-## MCP Server
-
-```bash
-./app.bin mcp-serve
-```
-
-The MCP server exposes `oci2bin` functionality to AI agents through structured
-tool calls. See [Commands](reference/commands.md) for its mount, network,
-image and environment rules.
-Only the artifact serving the MCP session may be run or inspected by default.
-To let the agent use another trusted binary, start the server with
-`--allow-image /absolute/path/to/app.bin`.
 
 ## Local Validation
 

@@ -122,10 +122,7 @@ The [feature inventory](https://latedeployment.github.io/oci2bin/reference/featu
 contains the complete build, runtime, security, VM, and operations surface.
 
 The extracted rootfs cache is keyed to the embedded payload's bytes. Changed
-layers get a separate entry, even when image configuration is identical. In
-MCP mode, only the serving artifact may be run or inspected by default; use
-`mcp-serve --allow-image /absolute/path/to/trusted.bin` to grant another exact
-binary.
+layers get a separate entry, even when image configuration is identical.
 
 ## Documentation
 

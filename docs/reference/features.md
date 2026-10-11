@@ -234,9 +234,7 @@ byte-for-byte reproducible.
 | Generate systemd unit | `oci2bin systemd app.bin` |
 | Generate SBOM | `oci2bin sbom app.bin` |
 | Push image payload | `oci2bin push app.bin REF` |
-| Update a binary from its signed manifest or image, replaying its recorded build options | `oci2bin update [--check] [--verify-key PATH] app.bin` |
-| Self-update check | `./app.bin --check-update` |
-| Self-update apply | `./app.bin --self-update` |
+| Update a binary from its image, replaying its recorded build options | `oci2bin update [--check] app.bin` |
 | Freeze and thaw | `oci2bin freeze NAME`, `oci2bin thaw NAME` |
 | Checkpoint and restore | `oci2bin checkpoint NAME`, `oci2bin restore NAME` |
 | Declarative stack up/down | `oci2bin up`, `oci2bin down` |
@@ -244,9 +242,6 @@ byte-for-byte reproducible.
 | Host capability checks (build host) | `oci2bin doctor`, `oci2bin doctor --json` |
 | Live probes and install of the missing packages | `oci2bin doctor --probe`, `oci2bin doctor --fix` |
 | Host capability checks (runtime host) | `./app.bin --doctor` |
-| MCP server | `./app.bin mcp-serve` |
-| MCP executable allowlist (own image only by default) | `mcp-serve --allow-image PATH` |
-| MCP host-mount allowlist (deny by default) | `mcp-serve --allow-mount PATH` / `--allow-mount-rw PATH` |
 | Prometheus metrics socket | `--metrics-socket PATH` |
 | Notifications | `--notify ntfy://...`, `gotify://`, `discord://`, `slack://`, `https://` |
 | Notification label | `--notify-name NAME` |

@@ -391,24 +391,16 @@ static void test_parse_opts(void)
                       "parse_opts: --metrics-socket value");
     }
 
-    /* --self-update */
+    /* Retired embedded-update flags are no longer accepted. */
     {
-        char* argv[] = {"prog", "--self-update", NULL};
+        char* apply[] = {"prog", "--self-update", NULL};
+        char* check[] = {"prog", "--check-update", NULL};
         memset(&opts, 0, sizeof(opts));
-        int r = parse_opts(2, argv, &opts);
-        ASSERT_INT_EQ(r, 0, "parse_opts: --self-update returns 0");
-        ASSERT_INT_EQ(opts.self_update, 1,
-                      "parse_opts: --self-update sets self_update=1");
-    }
-
-    /* --check-update */
-    {
-        char* argv[] = {"prog", "--check-update", NULL};
+        ASSERT_INT_EQ(parse_opts(2, apply, &opts), -1,
+                      "parse_opts: retired --self-update rejected");
         memset(&opts, 0, sizeof(opts));
-        int r = parse_opts(2, argv, &opts);
-        ASSERT_INT_EQ(r, 0, "parse_opts: --check-update returns 0");
-        ASSERT_INT_EQ(opts.check_update, 1,
-                      "parse_opts: --check-update sets check_update=1");
+        ASSERT_INT_EQ(parse_opts(2, check, &opts), -1,
+                      "parse_opts: retired --check-update rejected");
     }
 
     /* CMD positional args */
@@ -2813,8 +2805,6 @@ static void test_build_exec_args_extended(void)
 
 /* ── main ────────────────────────────────────────────────────────────────── */
 
-/* ── test_mcp_helpers ─────────────────────────────────────────────────────── */
-
 /* ── test_parent_dir_path ─────────────────────────────────────────────────── */
 
 static void test_parent_dir_path(void)
@@ -3545,135 +3535,6 @@ cleanup_ob:
     rmdir(base);
 }
 
-/* Run fn(arg) with stdout redirected to a temp file; return what it wrote
- * (malloc'd, NUL-terminated) or NULL. */
-static char* capture_stdout_of(void (*fn)(void*), void* arg)
-{
-    char path[] = "/tmp/oci2bin-cap-XXXXXX";
-    int fd = mkstemp(path);
-    if (fd < 0)
-    {
-        return NULL;
-    }
-    unlink(path);
-    fflush(stdout);
-    int saved = dup(STDOUT_FILENO);
-    dup2(fd, STDOUT_FILENO);
-    fn(arg);
-    fflush(stdout);
-    dup2(saved, STDOUT_FILENO);
-    close(saved);
-    off_t len = lseek(fd, 0, SEEK_END);
-    char* out = malloc((size_t)len + 1);
-    if (out && lseek(fd, 0, SEEK_SET) == 0 &&
-            read_all_fd(fd, out, (size_t)len) == (ssize_t)len)
-    {
-        out[len] = '\0';
-    }
-    else
-    {
-        free(out);
-        out = NULL;
-    }
-    close(fd);
-    return out;
-}
-
-static void send_text_nl_json(void* arg)
-{
-    (void)arg;
-    mcp_send_text_result("7", "{\"a\":\"x\"}\nline2\t\"q\"");
-}
-
-/* ── MCP review fixes: text results, image validation ──────────────────── */
-
-static void test_mcp_review_fixes(void)
-{
-    /* Result text is always a JSON string, whatever it contains. */
-    char* out = capture_stdout_of(send_text_nl_json, NULL);
-    ASSERT_NOT_NULL(out, "mcp_text: captured output");
-    if (out)
-    {
-        ASSERT(strstr(out, "\"text\":\"{\\\"a\\\":\\\"x\\\"}\\nline2\\t"
-                           "\\\"q\\\"\"") != NULL,
-                           "mcp_text: payload escaped into a JSON string");
-        ASSERT(strstr(out, "\n\"") == NULL && strchr(out, '\n') ==
-               out + strlen(out) - 1,
-               "mcp_text: no raw newline inside the reply");
-        free(out);
-    }
-
-    /* inspect_image/run_container: only real oci2bin binaries. */
-    char tmpl[] = "/tmp/oci2bin-mcpimg-XXXXXX";
-    char* dir = mkdtemp(tmpl);
-    ASSERT_NOT_NULL(dir, "mcp_image: mkdtemp");
-    if (!dir)
-    {
-        return;
-    }
-    char script[PATH_MAX];
-    snprintf(script, sizeof(script), "%s/evil.sh", dir);
-    FILE* f = fopen(script, "w");
-    if (f)
-    {
-        fputs("#!/bin/sh\necho pwned\n", f);
-        fclose(f);
-    }
-    chmod(script, 0755);
-    char real[PATH_MAX];
-    ASSERT(mcp_validate_image(script, real, sizeof(real)) != NULL,
-           "mcp_image: executable script rejected");
-    ASSERT(mcp_validate_image("relative/path", real, sizeof(real)) != NULL,
-           "mcp_image: relative path rejected");
-
-    char elf[PATH_MAX];
-    snprintf(elf, sizeof(elf), "%s/fake.bin", dir);
-    f = fopen(elf, "w");
-    if (f)
-    {
-        fputs("\177ELF no metadata here", f);
-        fclose(f);
-    }
-    chmod(elf, 0755);
-    ASSERT(mcp_validate_image(elf, real, sizeof(real)) != NULL,
-           "mcp_image: ELF without OCI2BIN_META rejected");
-
-    /* A marker can be appended to any host ELF. It is not authentication. */
-    f = fopen(elf, "ab");
-    if (f)
-    {
-        const unsigned char meta[] =
-        { 23, 0, 0, 0, 'O', 'C', 'I', '2', 'B', 'I', 'N', '_', 'M', 'E',
-          'T', 'A', 0, '{', '}', 0, 0, 0, 0 };
-        fwrite(meta, 1, sizeof(meta), f);
-        fclose(f);
-    }
-    const char* untrusted = mcp_validate_image(elf, real, sizeof(real));
-    ASSERT(untrusted && strstr(untrusted, "not allowed") != NULL,
-           "mcp_image: forged metadata does not grant host execution");
-    ASSERT_INT_EQ(mcp_allow_image(elf), 0,
-                  "mcp_image: operator may explicitly trust an image");
-    ASSERT(mcp_validate_image(elf, real, sizeof(real)) == NULL,
-           "mcp_image: explicitly trusted image accepted");
-    g_mcp_n_images = 0;
-
-    /* A binary under a writable mount root is refused even if valid. */
-    g_mcp_n_mount_roots = 1;
-    snprintf(g_mcp_mount_roots[0].path, sizeof(g_mcp_mount_roots[0].path),
-             "%s", dir);
-    ASSERT(realpath(dir, g_mcp_mount_roots[0].real) != NULL,
-           "mcp_image: realpath root");
-    g_mcp_mount_roots[0].writable = 1;
-    const char* why = mcp_validate_image(elf, real, sizeof(real));
-    ASSERT(why && strstr(why, "writable mount root") != NULL,
-           "mcp_image: writable mount root refused first");
-    g_mcp_n_mount_roots = 0;
-
-    unlink(script);
-    unlink(elf);
-    rmdir(dir);
-}
-
 /* ── VM cmdline hex round trip ─────────────────────────────────────────── */
 
 static void test_vm_cmdline_hex(void)
@@ -3702,114 +3563,6 @@ static void test_vm_cmdline_hex(void)
                   "vm_hex: overflow reported");
     ASSERT_INT_EQ(vm_hex_decode_list("abc", dec, sizeof(dec), out, 8), -1,
                   "vm_hex: odd length rejected");
-}
-
-static void test_mcp_helpers(void)
-{
-    /* mcp_name_valid: accepts alnum + allowed chars */
-    ASSERT_INT_EQ(mcp_name_valid("myapp"), 1,
-                  "mcp_helpers: valid name accepted");
-    ASSERT_INT_EQ(mcp_name_valid("my-app_1.2"), 1,
-                  "mcp_helpers: name with dash/underscore/dot accepted");
-    ASSERT_INT_EQ(mcp_name_valid(""), 0,
-                  "mcp_helpers: empty name rejected");
-    ASSERT_INT_EQ(mcp_name_valid(NULL), 0,
-                  "mcp_helpers: NULL name rejected");
-    ASSERT_INT_EQ(mcp_name_valid("bad/name"), 0,
-                  "mcp_helpers: slash in name rejected");
-    ASSERT_INT_EQ(mcp_name_valid("bad name"), 0,
-                  "mcp_helpers: space in name rejected");
-
-    /* The id is echoed back as the exact JSON token it arrived as: JSON-RPC
-     * 2.0 requires the response id to match the request id including type. */
-    {
-        char idb[80];
-        ASSERT_INT_EQ(mcp_parse_request_id("{\"id\":42,\"method\":\"x\"}",
-                                           idb, sizeof(idb)), 1,
-                      "mcp_helpers: numeric JSON-RPC id accepted");
-        ASSERT_STR_EQ(idb, "42", "mcp_helpers: numeric id echoed as number");
-
-        ASSERT_INT_EQ(mcp_parse_request_id("{\"id\":\"43\",\"method\":\"x\"}",
-                                           idb, sizeof(idb)), 1,
-                      "mcp_helpers: string JSON-RPC id accepted");
-        ASSERT_STR_EQ(idb, "\"43\"",
-                      "mcp_helpers: string id keeps its quotes");
-
-        ASSERT_INT_EQ(mcp_parse_request_id(
-                          "{\"id\":\"abc-123\",\"method\":\"x\"}",
-                          idb, sizeof(idb)), 1,
-                      "mcp_helpers: non-numeric string id accepted");
-        ASSERT_STR_EQ(idb, "\"abc-123\"",
-                      "mcp_helpers: non-numeric string id preserved verbatim");
-
-        ASSERT_INT_EQ(mcp_parse_request_id("{\"id\":-7,\"method\":\"x\"}",
-                                           idb, sizeof(idb)), 1,
-                      "mcp_helpers: negative numeric id accepted");
-        ASSERT_STR_EQ(idb, "-7", "mcp_helpers: negative id preserved");
-
-        ASSERT_INT_EQ(mcp_parse_request_id(
-                          "{\"params\":{\"id\":99},\"method\":\"x\"}",
-                          idb, sizeof(idb)), 0,
-                      "mcp_helpers: nested JSON-RPC id ignored");
-        ASSERT_INT_EQ(mcp_parse_request_id(
-                          "{\"id\":\"4\\\\2\",\"method\":\"x\"}",
-                          idb, sizeof(idb)), 0,
-                      "mcp_helpers: escaped string JSON-RPC id rejected");
-        ASSERT_INT_EQ(mcp_parse_request_id("{\"method\":\"x\"}",
-                                           idb, sizeof(idb)), 0,
-                      "mcp_helpers: missing id is a notification");
-        ASSERT_INT_EQ(mcp_parse_request_id("{\"id\":null,\"method\":\"x\"}",
-                                           idb, sizeof(idb)), 0,
-                      "mcp_helpers: null id is a notification");
-        /* An id longer than the buffer must be refused, not truncated into a
-         * different id than the client sent. */
-        char small[8];
-        ASSERT_INT_EQ(mcp_parse_request_id(
-                          "{\"id\":\"aaaaaaaaaaaaaaaaaaaa\",\"method\":\"x\"}",
-                          small, sizeof(small)), 0,
-                      "mcp_helpers: oversized id rejected rather than truncated");
-    }
-
-    ASSERT_INT_EQ((int)mcp_parse_detached_pid("1234\n"), 1234,
-                  "mcp_helpers: detached PID parsed");
-    ASSERT_INT_EQ((int)mcp_parse_detached_pid("warning\n 5678 \n"), 5678,
-                  "mcp_helpers: detached PID parsed after warning");
-    ASSERT_INT_EQ((int)mcp_parse_detached_pid("warning pid=12\n"), -1,
-                  "mcp_helpers: detached PID rejects embedded number");
-    ASSERT_INT_EQ((int)mcp_parse_detached_pid("1234 still starting\n"), -1,
-                  "mcp_helpers: detached PID rejects trailing text");
-    ASSERT_INT_EQ((int)mcp_parse_detached_pid("0\n"), -1,
-                  "mcp_helpers: detached PID rejects zero");
-
-    /* mcp container tracking */
-    g_mcp_n_ctrs = 0;
-    memset(g_mcp_ctrs, 0, sizeof(g_mcp_ctrs));
-    ASSERT_INT_EQ(mcp_find_ctr("missing"), -1,
-                  "mcp_helpers: find_ctr returns -1 for unknown name");
-
-    /* Add a tracked container. find_ctr() now verifies the entry still
-     * refers to the process we launched, so this uses our own pid and start
-     * time rather than a made-up PID — a fake one is indistinguishable from
-     * a recycled one and is correctly reported as gone. */
-    strncpy(g_mcp_ctrs[0].name, "test-ctr", MCP_NAME_MAX - 1);
-    g_mcp_ctrs[0].pid = getpid();
-    g_mcp_ctrs[0].start_time = mcp_proc_start_time(getpid());
-    g_mcp_n_ctrs = 1;
-    ASSERT_INT_EQ(mcp_find_ctr("test-ctr"), 0,
-                  "mcp_helpers: find_ctr finds tracked container");
-
-    /* A pid that is not ours must not be returned. */
-    g_mcp_ctrs[0].pid = 999999;
-    g_mcp_ctrs[0].start_time = 1;
-    ASSERT_INT_EQ(mcp_find_ctr("test-ctr"), -1,
-                  "mcp_helpers: find_ctr rejects a stale/recycled pid");
-    g_mcp_ctrs[0].pid = getpid();
-    g_mcp_ctrs[0].start_time = mcp_proc_start_time(getpid());
-    ASSERT_INT_EQ(mcp_find_ctr("other"), -1,
-                  "mcp_helpers: find_ctr misses different name");
-
-    /* reset */
-    g_mcp_n_ctrs = 0;
 }
 
 static void test_tar_entry_name_unsafe(void)
@@ -6952,166 +6705,6 @@ static void test_mountinfo_unescape(void)
 }
 
 /*
- * MCP host-mount policy. The server is driven by whatever is on the other end
- * of the pipe, so "is this a well-formed absolute path" is not the same
- * question as "may this be mounted".
- */
-static void test_mcp_mount_root_policy(void)
-{
-    g_mcp_n_mount_roots = 0;
-
-    /* Default is deny-everything. */
-    ASSERT_NULL(mcp_mount_root_for("/etc"),
-                "mcp mounts: nothing allowed by default");
-    ASSERT_NULL(mcp_mount_root_for("/srv/data"),
-                "mcp mounts: arbitrary path denied by default");
-
-    snprintf(g_mcp_mount_roots[0].path, sizeof(g_mcp_mount_roots[0].path),
-             "%s", "/srv/data");
-    g_mcp_mount_roots[0].writable = 0;
-    g_mcp_n_mount_roots = 1;
-
-    ASSERT_NOT_NULL(mcp_mount_root_for("/srv/data"),
-                    "mcp mounts: the root itself is allowed");
-    ASSERT_NOT_NULL(mcp_mount_root_for("/srv/data/sub/file"),
-                    "mcp mounts: path under the root is allowed");
-    ASSERT_NULL(mcp_mount_root_for("/srv"),
-                "mcp mounts: parent of the root is denied");
-    ASSERT_NULL(mcp_mount_root_for("/etc"),
-                "mcp mounts: unrelated path is denied");
-    /* The prefix trap: /srv/dataset must not match a /srv/data root. */
-    ASSERT_NULL(mcp_mount_root_for("/srv/dataset"),
-                "mcp mounts: sibling sharing a prefix is denied");
-    ASSERT_NULL(mcp_mount_root_for("/srv/data-other"),
-                "mcp mounts: prefix with '-' suffix is denied");
-
-    const struct mcp_mount_root* r = mcp_mount_root_for("/srv/data/x");
-    ASSERT(r && r->writable == 0,
-           "mcp mounts: allowed root is read-only unless marked writable");
-
-    g_mcp_mount_roots[0].writable = 1;
-    r = mcp_mount_root_for("/srv/data/x");
-    ASSERT(r && r->writable == 1,
-           "mcp mounts: writable root reports writable");
-
-    /* A root of "/" opens everything — allowed, but only if asked for. */
-    g_mcp_n_mount_roots = 1;
-    snprintf(g_mcp_mount_roots[0].path, sizeof(g_mcp_mount_roots[0].path),
-             "%s", "/");
-    g_mcp_mount_roots[0].writable = 0;
-    ASSERT_NOT_NULL(mcp_mount_root_for("/anything/at/all"),
-                    "mcp mounts: root of '/' matches any path");
-
-    /*
-     * The resolved-path half of the check. mount(2) follows symlinks in the
-     * source, so "/srv/data/escape" -> "/etc" passes the textual test while
-     * binding /etc into the container. Only the resolved comparison catches
-     * it — and an unset (empty) resolved root must match nothing rather than
-     * everything.
-     */
-    memset(g_mcp_mount_roots, 0, sizeof(g_mcp_mount_roots));
-    g_mcp_n_mount_roots = 1;
-    snprintf(g_mcp_mount_roots[0].path, sizeof(g_mcp_mount_roots[0].path),
-             "%s", "/srv/data");
-    const struct mcp_mount_root* root = &g_mcp_mount_roots[0];
-    ASSERT_NULL(mcp_mount_root_for_real(root, "/srv/data/sub"),
-                "mcp mounts: an unresolved root matches nothing");
-
-    snprintf(g_mcp_mount_roots[0].real, sizeof(g_mcp_mount_roots[0].real),
-             "%s", "/mnt/pool/data");
-    ASSERT_NOT_NULL(mcp_mount_root_for_real(root, "/mnt/pool/data/sub"),
-                    "mcp mounts: resolved path under resolved root allowed");
-    ASSERT_NULL(mcp_mount_root_for_real(root, "/etc"),
-                "mcp mounts: symlink target outside the root is denied");
-    ASSERT_NULL(mcp_mount_root_for_real(root, "/mnt/pool/dataset"),
-                "mcp mounts: resolved sibling sharing a prefix is denied");
-
-    snprintf(g_mcp_mount_roots[1].path, sizeof(g_mcp_mount_roots[1].path),
-             "%s", "/srv/writable");
-    snprintf(g_mcp_mount_roots[1].real, sizeof(g_mcp_mount_roots[1].real),
-             "%s", "/mnt/pool/writable");
-    g_mcp_mount_roots[1].writable = 1;
-    g_mcp_n_mount_roots = 2;
-    root = mcp_mount_root_for("/srv/data/link");
-    ASSERT(root == &g_mcp_mount_roots[0],
-           "mcp mounts: lexical path selects its own root policy");
-    ASSERT_NULL(mcp_mount_root_for_real(root, "/mnt/pool/writable/target"),
-                "mcp mounts: resolved path cannot switch root policy");
-
-    memset(g_mcp_mount_roots, 0, sizeof(g_mcp_mount_roots));
-    g_mcp_n_mount_roots = 0;
-}
-
-/*
- * MCP container tracking must survive PID reuse and must not leak slots.
- */
-static void test_mcp_ctr_identity_and_slots(void)
-{
-    memset(g_mcp_ctrs, 0, sizeof(g_mcp_ctrs));
-    g_mcp_n_ctrs = 0;
-
-    /* Our own start time is readable and stable. */
-    unsigned long long self = mcp_proc_start_time(getpid());
-    ASSERT(self != 0, "mcp identity: start time of self is readable");
-    ASSERT(mcp_proc_start_time(getpid()) == self,
-           "mcp identity: start time is stable across reads");
-
-    /* A pid that does not exist yields 0. */
-    ASSERT_INT_EQ((int)mcp_proc_start_time(999999), 0,
-                  "mcp identity: unknown pid has no start time");
-
-    /* An entry with the right identity is alive... */
-    int slot = mcp_alloc_ctr_slot();
-    ASSERT_INT_EQ(slot, 0, "mcp slots: first allocation is slot 0");
-    snprintf(g_mcp_ctrs[slot].name, MCP_NAME_MAX, "%s", "alpha");
-    g_mcp_ctrs[slot].pid = getpid();
-    g_mcp_ctrs[slot].start_time = self;
-    ASSERT_INT_EQ(mcp_ctr_alive(&g_mcp_ctrs[slot]), 1,
-                  "mcp identity: matching start time counts as alive");
-    ASSERT_INT_EQ(mcp_find_ctr("alpha"), 0,
-                  "mcp identity: live container is found by name");
-
-    /* ...and the same PID with a different start time is not: this is the
-     * PID-reuse case that previously let a signal hit a stranger. */
-    g_mcp_ctrs[slot].start_time = self + 1;
-    ASSERT_INT_EQ(mcp_ctr_alive(&g_mcp_ctrs[slot]), 0,
-                  "mcp identity: recycled pid is not treated as ours");
-    ASSERT_INT_EQ(mcp_find_ctr("alpha"), -1,
-                  "mcp identity: stale entry is not returned by name");
-    ASSERT_INT_EQ((int)g_mcp_ctrs[slot].pid, -1,
-                  "mcp identity: stale entry is released on lookup");
-
-    /* The released slot is reused rather than growing the table. */
-    int again = mcp_alloc_ctr_slot();
-    ASSERT_INT_EQ(again, 0, "mcp slots: stopped container's slot is reused");
-    ASSERT_INT_EQ(g_mcp_n_ctrs, 1, "mcp slots: table did not grow");
-
-    /* Exhaustion is reported rather than overflowing the array. */
-    memset(g_mcp_ctrs, 0, sizeof(g_mcp_ctrs));
-    g_mcp_n_ctrs = 0;
-    int allocated = 0;
-    for (int i = 0; i < MCP_MAX_CONTAINERS + 4; i++)
-    {
-        int sl = mcp_alloc_ctr_slot();
-        if (sl < 0)
-        {
-            break;
-        }
-        /* Mark as live so the next allocation cannot reclaim it. */
-        g_mcp_ctrs[sl].pid = getpid();
-        g_mcp_ctrs[sl].start_time = self;
-        allocated++;
-    }
-    ASSERT_INT_EQ(allocated, MCP_MAX_CONTAINERS,
-                  "mcp slots: allocation stops at the table limit");
-    ASSERT_INT_EQ(mcp_alloc_ctr_slot(), -1,
-                  "mcp slots: full table reports -1");
-
-    memset(g_mcp_ctrs, 0, sizeof(g_mcp_ctrs));
-    g_mcp_n_ctrs = 0;
-}
-
-/*
  * read_self_metadata() parses a binary framing format out of the binary's own
  * tail: a LE32 length, the OCI2BIN_META magic, the JSON, and optionally a
  * trailing signature block whose length is a BE32 at the very end.
@@ -7219,7 +6812,8 @@ static void test_read_self_metadata(void)
     {
         const char* json;
         int policy;
-    } policies[] = {
+    } policies[] =
+    {
         {"{\"require_signed\" : \n\t true}", 1},
         {"{\"require_\\u0073igned\":true}", 1},
         {"{\"nested\":{\"require_signed\":true}}", 0},
@@ -9633,14 +9227,12 @@ int main(void)
     test_build_exec_args();
     test_build_exec_args_extended();
     test_cap_name_to_num();
-    test_mcp_review_fixes();
     test_vm_cmdline_hex();
     test_parse_opts_resource_limits();
     test_parse_opts_user();
     test_parse_opts_caps();
     test_parse_opts_ulimit();
     test_parse_opts_misc_flags();
-    test_mcp_helpers();
     test_parent_dir_path();
     test_read_write_all_fd();
     test_read_write_file();
@@ -9695,8 +9287,6 @@ int main(void)
     test_parse_opts_cdi();
     test_cdi_resolve();
     test_credstore_candidate_path();
-    test_mcp_ctr_identity_and_slots();
-    test_mcp_mount_root_policy();
     test_mountinfo_unescape();
     test_read_self_metadata();
     test_layer_xattr_allowlist();

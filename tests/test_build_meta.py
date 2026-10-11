@@ -15,11 +15,10 @@ _spec.loader.exec_module(bp)
 
 
 class TestBuildMetaBlock(unittest.TestCase):
-    def test_includes_update_fields(self):
+    def test_includes_image_and_integrity_fields(self):
         block = bp.build_meta_block(
             'demo:latest',
             digest='demo@sha256:' + 'a' * 64,
-            self_update_url='https://example.com/demo.json',
             pin_digest='b' * 64,
         )
         self.assertEqual(block[4:4 + len(bp.META_MAGIC)], bp.META_MAGIC)
@@ -28,8 +27,7 @@ class TestBuildMetaBlock(unittest.TestCase):
         payload = block[4 + len(bp.META_MAGIC):-1]
         meta = json.loads(payload)
         self.assertEqual(meta['image'], 'demo:latest')
-        self.assertEqual(meta['self_update_url'],
-                         'https://example.com/demo.json')
+        self.assertNotIn('self_update_url', meta)
         self.assertEqual(meta['pin_digest'], 'b' * 64)
         self.assertEqual(meta['rootfs_format'], 'tar')
         self.assertEqual(meta['payload_encoding'], 'tar')

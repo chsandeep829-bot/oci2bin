@@ -68,8 +68,8 @@ machine, ask the binary itself to check that host:
 `--doctor` is read-only — it never extracts the image or creates namespaces. It
 reports unprivileged user namespaces (including the AppArmor / `clone` knobs
 above), `newuidmap`/`newgidmap` + `/etc/subuid`, seccomp, landlock, cgroup v2,
-`tar`, `python3` + `openssl` (needed only for `--self-update` and for
-signature keys that are not P-256; pinned digests and `--require-signed` are
+`tar`, `python3` + `openssl` (needed only for signature keys that are not
+P-256; pinned digests and `--require-signed` are
 checked by the loader itself), and `/dev/kvm` (for `--vm`), then exits
 non-zero if a blocking issue is found. You can also probe the kernel knobs by hand:
 

@@ -14,11 +14,16 @@ All notable changes to oci2bin are documented here.
   host cache directories.
 - Rootfs cache keys now hash the exact embedded payload. Distinct layers
   cannot share a cache entry by claiming the same image configuration.
-- MCP `run_container` and `inspect_image` now accept only the server's own
-  artifact and exact binaries granted by the operator with `--allow-image`.
-  A forged metadata marker is no longer enough to execute a host binary.
 
 ### Changed
+
+- Removed the embedded MCP server, its `mcp-serve` command, and its dedicated
+  fuzz and integration tests. Container operations remain available through
+  the CLI.
+- Removed the embedded self-update manifest path (`--self-update-url`,
+  `--check-update`, and `--self-update`). `oci2bin update` continues to rebuild
+  binaries from their source image and skips that retired option when replaying
+  build settings from older artifacts.
 
 - **The `--init` / `--restart` / `--health` supervisor is event-driven.**
   Both loops polled `waitpid(WNOHANG)` with 200 ms sleeps and forwarded
@@ -57,9 +62,8 @@ All notable changes to oci2bin are documented here.
   recomputed natively with the same placeholder substitution the builder
   used. The embedded python/openssl verifiers remain only as a fallback for
   keys on another curve (refused when python3 or openssl is missing) and for
-  metadata that spells its keys with JSON `\u` escapes; `--self-update`
-  still uses them. `--debug` shows `verify_key.native`,
-  `require_signed.native` and `pin.native` events.
+  metadata that spells its keys with JSON `\u` escapes. `--debug` shows
+  `verify_key.native`, `require_signed.native` and `pin.native` events.
 
 - **`--stop-timeout N`**: seconds between the SIGTERM the supervisor
   forwards to the workload (or sends to an unhealthy one) and the SIGKILL
@@ -280,7 +284,7 @@ All notable changes to oci2bin are documented here.
   does not).
 
 - **Signature and digest verifiers run Python in isolated mode.** The
-  `--verify-key`, `--require-signed`, `--pin-digest` and self-update helpers
+  `--verify-key`, `--require-signed` and `--pin-digest` helpers
   exec'd `/usr/bin/python3` with the caller's environment, so a `PYTHONPATH`
   directory holding a fake `hashlib`/`json`/`struct` decided every verdict.
   They now run with `python3 -I`.
@@ -290,17 +294,6 @@ All notable changes to oci2bin are documented here.
   `PR_CAPBSET_DROP` failed and a root workload regained all capabilities at
   `execve`. Bounding-set drops now happen first; added caps are raised into
   the ambient set after the `--user` switch (so non-root workloads keep them).
-
-- **MCP server hardening.** `run_container` forwards only `KEY=VALUE`
-  environment entries (a bare `NAME` copied the server's own environment —
-  cloud credentials, `SSH_AUTH_SOCK` — into the container). `run_container`
-  and `inspect_image` only exec oci2bin binaries (ELF + `OCI2BIN_META`) that
-  are outside every writable mount root, instead of any executable.
-  `exec_in_container` enters the container's user namespace and root
-  (`nsenter -U -r -w`, plus only the namespaces the container owns), so the
-  command no longer runs with the server's host credentials. `stop_container`
-  checks the process start time before signalling, so a recycled PID is never
-  killed.
 
 - **Health probes run as the workload user** (`--user` or image `User`), not
   as in-container root.
@@ -412,10 +405,8 @@ All notable changes to oci2bin are documented here.
 - **`--net slirp` / `--net pasta` work.** The helper was forked inside the new
   user/network namespace it was meant to connect from; it now runs on the host
   side, in the foreground, and is stopped on every exit path.
-- **`OCI2BIN_INSPECT` and MCP `inspect_image` work with Docker 25+ layouts**
-  (the config path `blobs/sha256/<hex>` was flattened and never found), and
-  MCP replies are valid JSON (`list_containers` no longer truncates;
-  `inspect_image` returns a string).
+- **`OCI2BIN_INSPECT` works with Docker 25+ layouts** (the config path
+  `blobs/sha256/<hex>` was flattened and never found).
 - **`--ulimit`** rejects empty and negative values; **`--config`** after `--`
   is left to the workload.
 - **cloud-hypervisor `--vm`**: the guest now reads its kernel command line
