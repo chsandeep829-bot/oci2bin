@@ -21,8 +21,8 @@ APP_ROOT = Path(__file__).resolve().parent
 TOKEN = os.environ.get("DASHBOARD_TOKEN", "")
 BUILDS_ENABLED = os.environ.get("ENABLE_BUILDS", "false").lower() == "true"
 MAX_ARTIFACT_BYTES = 512 * 1024 * 1024
-JOB_TTL_SECONDS = 15 * 60
-BUILD_TIMEOUT_SECONDS = 300
+JOB_TTL_SECONDS = 2 * 60 * 60
+BUILD_TIMEOUT_SECONDS = 60 * 60
 ALLOWED_REGISTRIES = {"docker.io", "ghcr.io", "quay.io", "registry.k8s.io", "public.ecr.aws"}
 
 app = FastAPI(title="OCI2BIN Web Dashboard", docs_url=None, redoc_url=None)
@@ -120,7 +120,7 @@ def _run_job(job_id: str, image: str) -> None:
                 _jobs[job_id].update(status="complete", message="Build completed.", size=output.stat().st_size)
     except subprocess.TimeoutExpired:
         with _lock:
-            _jobs[job_id].update(status="failed", message="Build timed out after five minutes.")
+            _jobs[job_id].update(status="failed", message="Build timed out after one hour.")
     except Exception:
         with _lock:
             _jobs[job_id].update(status="failed", message="Build failed due to a server-side error. Check server logs.")
@@ -172,7 +172,9 @@ def build_status(job_id: str, authorization: str | None = Header(default=None)) 
         job = _jobs.get(job_id)
         if not job:
             raise HTTPException(404, "Build not found or expired.")
-        result = {key: value for key, value in job.items() if key not in {"created", "image"}}
+        result = {key: value for key, value in job.items() if key != "created"}
+        result["job_id"] = job_id
+        result["created_at"] = int(job["created"])
         result["download_url"] = f"/api/builds/{job_id}/download" if job["status"] == "complete" else None
         return result
 
@@ -208,7 +210,7 @@ main{max-width:900px;margin:auto;padding:32px 18px 60px}.brand{display:flex;gap:
 <label for="image">Container image</label><input id="image" value="alpine:latest" maxlength="300" placeholder="alpine:latest">
 <div class="row" style="margin-top:14px"><button id="build">Build executable</button><button id="clear" style="background:#263550;color:#eef3ff">Clear status</button></div>
 <div id="status" class="status" role="status" aria-live="polite">Ready when the server is configured.</div>
-<div class="note">Security: this dashboard packages images but does not run the resulting executable. Builds are limited to allowlisted public registries, one build at a time, three starts per IP per ten minutes, a five-minute timeout, and a 512 MiB output cap. This is still a hobby deployment, not a hardened multi-user build service.</div>
+<div class="note">Security: this dashboard packages images but does not run the resulting executable. Builds are limited to allowlisted public registries, one build at a time, three starts per IP per ten minutes, a one-hour timeout, and a 512 MiB output cap. This is still a hobby deployment, not a hardened multi-user build service.</div>
 </section>
 <section class="panel"><h2>How it works</h2><ul><li>Fetches an image using Skopeo without requiring a Docker daemon.</li><li>Creates an executable artifact with the OCI2BIN CLI.</li><li>Provides a temporary download link for completed builds.</li><li>Build records and artifacts expire after 15 minutes and are lost when the service restarts.</li></ul><p class="muted">Only build images you trust. Do not enter credentials, private registry tokens, or secrets.</p></section>
 <div class="foot">OCI2BIN Studio · Linux artifacts only</div></main>
@@ -217,7 +219,7 @@ const tokenEl=document.getElementById('token'), imageEl=document.getElementById(
 let active=false;
 function show(title,detail='',kind=''){statusEl.innerHTML='';const strong=document.createElement('strong');strong.textContent=title;strong.className=kind;statusEl.append(strong);const p=document.createElement('div');p.textContent=detail;statusEl.append(p)}
 async function api(path,options={}){const token=tokenEl.value.trim();return fetch(path,{...options,headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json',...(options.headers||{})}})}
-async function poll(id){for(let i=0;i<120;i++){await new Promise(r=>setTimeout(r,2500));let res=await api('/api/builds/'+id);let data=await res.json();if(!res.ok){show('Could not read build status',data.detail||'Request failed','bad');return}if(data.status==='complete'){show('Build complete','Artifact size: '+Math.round((data.size||0)/1024/1024*10)/10+' MiB. Preparing download…','ok');const res2=await api('/api/builds/'+id+'/download');if(!res2.ok){const e=await res2.json().catch(()=>({}));show('Download unavailable',e.detail||'The artifact may have expired.','bad');return}const blob=await res2.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='oci2bin-artifact.bin';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);show('Build complete','Your executable download should begin now. Artifacts expire after 15 minutes.','ok');return}if(data.status==='failed'){show('Build failed',data.message+(data.log?'\n\n'+data.log:''),'bad');return}show('Build in progress',data.message||'Pulling image and packaging it…')}show('Still processing','The build is taking longer than expected. Refresh and check the service logs if it does not finish.')}
+async function poll(id){for(let i=0;i<1440;i++){await new Promise(r=>setTimeout(r,2500));let res=await api('/api/builds/'+id);let data=await res.json();if(!res.ok){show('Could not read build status',data.detail||'Request failed','bad');return}const detail='Job: '+(data.job_id||id)+' | Image: '+(data.image||imageEl.value)+' | Started: '+(data.created_at?new Date(data.created_at*1000).toLocaleString():'just now');if(data.status==='complete'){show('Build complete',detail+' | Artifact size: '+Math.round((data.size||0)/1024/1024*10)/10+' MiB. Preparing download…','ok');const res2=await api('/api/builds/'+id+'/download');if(!res2.ok){const e=await res2.json().catch(()=>({}));show('Download unavailable',e.detail||'The artifact may have expired.','bad');return}const blob=await res2.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='oci2bin-artifact.bin';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);show('Build complete','Your executable download should begin now. Artifacts expire after 15 minutes.','ok');return}if(data.status==='failed'){show('Build failed',detail+'\n'+data.message+(data.log?'\n\nBuild log:\n'+data.log:''),'bad');return}show('Build in progress',detail+'\n'+(data.message||'Pulling image and packaging it…'))}show('Still processing','The build may run for up to one hour. Job: '+id+'. Check Render logs if it does not finish.')}
 buildBtn.addEventListener('click',async()=>{if(active)return;active=true;buildBtn.disabled=true;try{show('Starting build','Validating image and queueing a job…');const res=await api('/api/builds',{method:'POST',body:JSON.stringify({image:imageEl.value})});const data=await res.json();if(!res.ok){show('Could not start build',data.detail||'Request failed','bad');return}await poll(data.id)}catch(e){show('Connection error','Could not reach the server. Check the deployment and try again.','bad')}finally{active=false;buildBtn.disabled=false}});
 document.getElementById('clear').addEventListener('click',()=>show('Ready','Enter an image reference to start a new build.'));
 fetch('/api/config').then(r=>r.json()).then(c=>{if(!c.builds_enabled)show('Builds are disabled','The server owner must set ENABLE_BUILDS=true after reviewing the security notes.','bad');else if(!c.token_configured)show('Server needs configuration','Set DASHBOARD_TOKEN to a random secret of at least 24 characters.','bad');else show('Ready','Enter your dashboard token and a public image reference.','ok')}).catch(()=>show('Server not reachable','Check the deployment.','bad'));
