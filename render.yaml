@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: oci2bin-studio
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: ENABLE_BUILDS
+        value: "false"
+      - key: DASHBOARD_TOKEN
+        generateValue: true
