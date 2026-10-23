@@ -51,10 +51,14 @@ def _validate_image(value: str) -> str:
         raise HTTPException(400, "Invalid image reference. Use a tag or a SHA-256 digest.")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]*", image):
         raise HTTPException(400, "Image reference contains unsupported characters.")
-    first = image.split("/", 1)[0]
-    if "." in first or ":" in first or first == "localhost":
-        if first.lower() not in ALLOWED_REGISTRIES:
-            raise HTTPException(400, "For safety, only supported public registries are allowed: Docker Hub, GHCR, Quay, Kubernetes Registry, and Public ECR.")
+    # A registry can only be identified in the first path component when the
+    # image contains a slash. Otherwise, e.g. "alpine:latest", the colon is a
+    # tag separator and the image is a Docker Hub short name.
+    if "/" in image:
+        first = image.split("/", 1)[0]
+        if "." in first or ":" in first or first.lower() == "localhost":
+            if first.lower() not in ALLOWED_REGISTRIES:
+                raise HTTPException(400, "For safety, only supported public registries are allowed: Docker Hub, GHCR, Quay, Kubernetes Registry, and Public ECR.")
     return image
 
 def _limits() -> None:
